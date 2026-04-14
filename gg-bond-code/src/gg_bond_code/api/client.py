@@ -8,9 +8,16 @@ Model routing:
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 from typing import Any, AsyncIterator
 
+import httpx
+
 from ..config.auth import resolve_api_key
+
+logger = logging.getLogger(__name__)
 
 # ── Model family detection ──────────────────────────────────────────
 
@@ -26,6 +33,11 @@ _MAX_OUTPUT_TOKENS: dict[str, int] = {
     "anthropic": 8192,
     "openai": 65536,
 }
+
+_DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
+
+_MAX_RETRIES = 3
+_RETRY_DELAYS = [1.0, 2.0, 4.0]
 
 
 def _model_family(model: str) -> str:
@@ -44,6 +56,41 @@ def _model_family(model: str) -> str:
 get_model_family = _model_family
 
 
+# ── Retry helper ─────────────────────────────────────────────────────
+
+def _is_retryable(exc: Exception) -> bool:
+    """Check if an exception is retryable (429 or 5xx)."""
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    if status_code is not None:
+        return status_code == 429 or status_code >= 500
+    return False
+
+
+async def _retry_stream(gen_factory, *args, **kwargs) -> AsyncIterator[dict[str, Any]]:
+    """Wrap an async generator factory with exponential-backoff retry.
+
+    gen_factory returns an async generator (not a coroutine), so we iterate
+    it directly with ``async for`` — no ``await``.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            async for evt in gen_factory(*args, **kwargs):
+                yield evt
+            return
+        except Exception as exc:
+            if not _is_retryable(exc) or attempt >= _MAX_RETRIES:
+                raise
+            last_exc = exc
+            delay = _RETRY_DELAYS[attempt]
+            logger.warning("API error (attempt %d/%d), retrying in %.1fs: %s",
+                           attempt + 1, _MAX_RETRIES, delay, exc)
+            await asyncio.sleep(delay)
+    raise last_exc  # type: ignore[misc]
+
+
 # ── OpenAI-compatible client ────────────────────────────────────────
 
 def _get_openai_client() -> Any:
@@ -54,10 +101,10 @@ def _get_openai_client() -> Any:
     base_url = get_setting("base_url") or _DEFAULT_BASE_URLS["openai"]
 
     from openai import AsyncOpenAI
-    return AsyncOpenAI(api_key=api_key, base_url=base_url)
+    return AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=_DEFAULT_TIMEOUT)
 
 
-async def _stream_openai(
+async def _stream_openai_inner(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     system: str,
@@ -124,7 +171,6 @@ async def _stream_openai(
         if choice.finish_reason in ("stop", "tool_calls"):
             for idx in sorted(tool_call_accum):
                 tc_data = tool_call_accum[idx]
-                import json
                 try:
                     args = json.loads(tc_data["arguments"])
                 except (json.JSONDecodeError, TypeError):
@@ -136,6 +182,20 @@ async def _stream_openai(
                     "input": args,
                 }
             break
+
+
+async def _stream_openai(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    system: str,
+    model: str = "deepseek-chat",
+    max_tokens: int = 8192,
+) -> AsyncIterator[dict[str, Any]]:
+    """Stream from OpenAI-compatible API with retry."""
+    async for evt in _retry_stream(
+        _stream_openai_inner, messages, tools, system, model, max_tokens
+    ):
+        yield evt
 
 
 def _to_openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

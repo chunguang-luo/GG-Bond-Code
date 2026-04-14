@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import sys
+import asyncio
+import time
 
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.text import Text
 
 from .query import QueryRunner, QueryEvent
 from .state.store import Store
-from .permissions.manager import PermissionManager, PermissionDecision
+from .permissions.manager import PermissionDecision
 
 
 class REPL:
@@ -20,8 +19,11 @@ class REPL:
     def __init__(self, model: str | None = None) -> None:
         self.model = model
         self.console = Console()
-        self.runner = QueryRunner(model=model)
+        self.runner = QueryRunner(model=model, permission_callback=self._ask_permission)
         self.running = True
+        self.show_thinking = False  # toggle with /thinking command
+        self._last_interrupt_time: float = 0.0  # for double-Ctrl+C exit
+        self._current_task: asyncio.Task | None = None  # track running query task
 
     async def run(self) -> None:
         """Main REPL loop."""
@@ -44,12 +46,17 @@ class REPL:
                 if not user_input.strip():
                     continue
 
-                # Run query
-                await self._run_query(user_input)
+                # Run query as a task so we can cancel it
+                self._current_task = asyncio.create_task(self._run_query(user_input))
+                try:
+                    await self._current_task
+                except KeyboardInterrupt:
+                    self._handle_interrupt()
+                finally:
+                    self._current_task = None
 
             except KeyboardInterrupt:
-                self.console.print("\n[interrupted]", style="yellow")
-                continue
+                self._handle_interrupt()
             except EOFError:
                 break
 
@@ -63,38 +70,102 @@ class REPL:
             self.running = False
             return None
 
+    async def _ask_permission(self, tool_name: str, params: dict) -> PermissionDecision:
+        """Async permission callback — wraps sync ask_user via to_thread."""
+        return await asyncio.to_thread(self.runner.permissions.ask_user, tool_name, params)
+
+    def _handle_interrupt(self) -> None:
+        """Handle Ctrl+C: first press cancels current query, second press exits REPL."""
+        now = time.monotonic()
+        if self._current_task is not None and not self._current_task.done():
+            # Cancel the running query task
+            self._current_task.cancel()
+            self.console.print("\n[interrupted — query cancelled]", style="yellow")
+        elif now - self._last_interrupt_time < 3.0:
+            # Double Ctrl+C within 3 seconds → exit
+            self.console.print("\n[exiting...]", style="yellow")
+            self.running = False
+        else:
+            self.console.print("\n[interrupted — press Ctrl+C again to exit]", style="yellow")
+        self._last_interrupt_time = now
+
     async def _run_query(self, user_input: str) -> None:
         """Run a query and display results."""
         text_parts: list[str] = []
+        thinking_parts: list[str] = []
+        tool_start_times: dict[str, float] = {}  # tool_use_id → start time
+        in_thinking = False  # track if we're inside a thinking block
+        gen = None  # track the async generator for cleanup
 
-        async for event in self.runner.run(user_input):
-            if event.type == "text":
-                # Stream text directly
-                self.console.print(event.content, end="", highlight=False)
-                text_parts.append(event.content)
-            elif event.type == "tool_use":
-                self.console.print()
-                self.console.print(
-                    f"  ⚙ {event.tool_name}({self._format_params(event.tool_input)})",
-                    style="dim cyan",
-                )
-            elif event.type == "tool_result":
-                if event.tool_error:
+        try:
+            gen = self.runner.run(user_input)
+            async for event in gen:
+                if event.type == "text":
+                    # If we were showing thinking, close it before text output
+                    if in_thinking and self.show_thinking:
+                        self.console.print("\n< /Thinking > ", style="dim", end="")
+                        in_thinking = False
+                    # Stream text directly
+                    self.console.print(event.content, end="", highlight=False)
+                    self.console.file.flush()
+                    text_parts.append(event.content)
+
+                elif event.type == "thinking":
+                    thinking_parts.append(event.content)
+                    if self.show_thinking:
+                        if not in_thinking:
+                            self.console.print("< Thinking > ", style="dim", end="")
+                            in_thinking = True
+                        self.console.print(event.content, end="", style="dim italic")
+                        self.console.file.flush()
+
+                elif event.type == "tool_start":
+                    tool_id = event.tool_input.get("id", "")
+                    tool_start_times[tool_id] = time.monotonic()
                     self.console.print(
-                        f"  ✗ {event.tool_name}: {event.tool_result[:200]}",
-                        style="red",
+                        f"  ⚙ {event.tool_name}...",
+                        style="dim cyan",
                     )
-                else:
-                    # Show truncated result
-                    result = event.tool_result
-                    if len(result) > 500:
-                        result = result[:500] + "..."
-                    self.console.print(f"  ✓ {event.tool_name}", style="green")
-            elif event.type == "error":
-                self.console.print(f"\nError: {event.content}", style="bold red")
-            elif event.type == "thinking":
-                # Optionally show thinking
-                pass
+
+                elif event.type == "tool_use":
+                    self.console.print()
+                    self.console.print(
+                        f"  ⚙ {event.tool_name}({self._format_params(event.tool_input)})",
+                        style="dim cyan",
+                    )
+
+                elif event.type == "tool_result":
+                    elapsed = ""
+                    # Try to find matching start time (approximate match by tool_name)
+                    for tid, t0 in list(tool_start_times.items()):
+                        elapsed = f" ({time.monotonic() - t0:.1f}s)"
+                        del tool_start_times[tid]
+                        break
+
+                    if event.tool_error:
+                        self.console.print(
+                            f"  ✗ {event.tool_name}{elapsed}: {event.tool_result[:200]}",
+                            style="red",
+                        )
+                    else:
+                        result = event.tool_result
+                        if len(result) > 500:
+                            result = result[:500] + "..."
+                        self.console.print(f"  ✓ {event.tool_name}{elapsed}", style="green")
+
+                elif event.type == "error":
+                    self.console.print(f"\nError: {event.content}", style="bold red")
+
+        except asyncio.CancelledError:
+            # Query was cancelled by Ctrl+C — clean up the generator
+            if gen is not None:
+                await gen.aclose()
+            self.console.print("\n[query stopped]", style="yellow")
+            return
+
+        # Close thinking block if still open
+        if in_thinking and self.show_thinking:
+            self.console.print("\n< /Thinking >", style="dim")
 
         if text_parts:
             self.console.print()  # newline after response
@@ -109,9 +180,14 @@ class REPL:
         elif cmd == "/clear":
             store = Store()
             store.set("messages", [])
-            self.runner = QueryRunner(model=self.model)
+            self.runner = QueryRunner(model=self.model, permission_callback=self._ask_permission)
             self.console.clear()
             self._print_welcome()
+            return False
+        elif cmd == "/thinking":
+            self.show_thinking = not self.show_thinking
+            state = "ON" if self.show_thinking else "OFF"
+            self.console.print(f"Thinking display: [green]{state}[/green]")
             return False
         elif cmd == "/help":
             self._print_help()
@@ -151,11 +227,12 @@ class REPL:
     def _print_help(self) -> None:
         self.console.print(
             Panel(
-                "/help    - Show this help\n"
-                "/clear   - Clear conversation\n"
-                "/compact - Compact conversation history\n"
-                "/model   - Show current model\n"
-                "/exit    - Exit the REPL",
+                "/help     - Show this help\n"
+                "/clear    - Clear conversation\n"
+                "/compact  - Compact conversation history\n"
+                "/thinking - Toggle thinking display\n"
+                "/model    - Show current model\n"
+                "/exit     - Exit the REPL",
                 title="Commands",
                 border_style="green",
             )
