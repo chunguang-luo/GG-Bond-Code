@@ -9,9 +9,9 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
-from gg_bond_code.query import QueryRunner, QueryEvent
-from gg_bond_code.state.store import Store
-from gg_bond_code.permissions.manager import PermissionManager, PermissionDecision
+from .query import QueryRunner, QueryEvent
+from .state.store import Store
+from .permissions.manager import PermissionManager, PermissionDecision
 
 
 class REPL:

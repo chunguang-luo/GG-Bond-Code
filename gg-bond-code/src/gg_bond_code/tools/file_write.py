@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from gg_bond_code.tools.base import Tool, ToolResult
+from .base import Tool, ToolResult
 
 
 class FileWriteTool(Tool):

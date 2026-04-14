@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from gg_bond_code.config.settings import get_setting
+from ..config.settings import get_setting
 
 
 class PermissionDecision(Enum):

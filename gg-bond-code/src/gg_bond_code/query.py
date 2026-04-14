@@ -6,11 +6,11 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
-from gg_bond_code.api.client import stream_message, get_model_family
-from gg_bond_code.prompts.system import build_system_prompt
-from gg_bond_code.state.store import Store
-from gg_bond_code.tools.base import ToolRegistry, ToolResult, create_default_registry
-from gg_bond_code.permissions.manager import PermissionManager, PermissionDecision
+from .api.client import stream_message, get_model_family
+from .prompts.system import build_system_prompt
+from .state.store import Store
+from .tools.base import ToolRegistry, ToolResult, create_default_registry
+from .permissions.manager import PermissionManager, PermissionDecision
 
 
 @dataclass

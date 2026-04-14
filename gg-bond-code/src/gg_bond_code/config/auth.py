@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from gg_bond_code.config.settings import get_setting, _load_json, _save_json
+from .settings import get_setting, _load_json, _save_json
 
 from pathlib import Path
 
@@ -15,7 +15,7 @@ def resolve_api_key() -> str | None:
     - claude-* → ANTHROPIC_API_KEY env → settings api_key
     - others   → GGBOND_API_KEY env → settings api_key
     """
-    from gg_bond_code.api.client import _model_family
+    from ..api.client import _model_family
 
     model = get_setting("model", "deepseek-chat")
     family = _model_family(model)

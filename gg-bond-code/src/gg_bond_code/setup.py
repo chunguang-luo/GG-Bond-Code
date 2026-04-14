@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from gg_bond_code.state.store import Store
+from .state.store import Store
 
 
 def setup(cwd: str, model: str | None = None) -> None:
@@ -20,7 +20,7 @@ def setup(cwd: str, model: str | None = None) -> None:
 
     # Model priority: CLI flag → config.toml → default
     if not model:
-        from gg_bond_code.config.settings import get_setting
+        from .config.settings import get_setting
         model = get_setting("model", "deepseek-chat")
     store.set("model", model)
 

@@ -74,12 +74,12 @@ class ToolRegistry:
 
 def create_default_registry() -> ToolRegistry:
     """Create registry with all default tools."""
-    from gg_bond_code.tools.bash import BashTool
-    from gg_bond_code.tools.file_read import FileReadTool
-    from gg_bond_code.tools.file_edit import FileEditTool
-    from gg_bond_code.tools.file_write import FileWriteTool
-    from gg_bond_code.tools.glob import GlobTool
-    from gg_bond_code.tools.grep import GrepTool
+    from .bash import BashTool
+    from .file_read import FileReadTool
+    from .file_edit import FileEditTool
+    from .file_write import FileWriteTool
+    from .glob import GlobTool
+    from .grep import GrepTool
 
     registry = ToolRegistry()
     for tool_cls in [BashTool, FileReadTool, FileEditTool, FileWriteTool, GlobTool, GrepTool]:

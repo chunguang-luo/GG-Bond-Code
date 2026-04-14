@@ -6,8 +6,8 @@ import functools
 import sys
 from typing import Optional
 
-from gg_bond_code.config.settings import load_settings
-from gg_bond_code.config.auth import resolve_api_key
+from .config.settings import load_settings
+from .config.auth import resolve_api_key
 
 
 @functools.lru_cache(maxsize=1)
@@ -33,8 +33,8 @@ def _preconnect(api_key: str) -> None:
     """Send a lightweight HEAD request to warm the connection pool."""
     import httpx
 
-    from gg_bond_code.api.client import _DEFAULT_BASE_URLS, _model_family
-    from gg_bond_code.config.settings import get_setting
+    from .api.client import _DEFAULT_BASE_URLS, _model_family
+    from .config.settings import get_setting
 
     model = get_setting("model", "deepseek-chat")
     family = _model_family(model)

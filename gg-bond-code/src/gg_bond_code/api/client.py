@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
-from gg_bond_code.config.auth import resolve_api_key
+from ..config.auth import resolve_api_key
 
 # ── Model family detection ──────────────────────────────────────────
 
@@ -48,7 +48,7 @@ get_model_family = _model_family
 
 def _get_openai_client() -> Any:
     """Get or create an OpenAI-compatible async client."""
-    from gg_bond_code.config.settings import get_setting
+    from ..config.settings import get_setting
 
     api_key = resolve_api_key()
     base_url = get_setting("base_url") or _DEFAULT_BASE_URLS["openai"]
@@ -168,7 +168,7 @@ def _get_anthropic_client() -> Any:
     import os
     import anthropic
 
-    from gg_bond_code.config.settings import get_setting
+    from ..config.settings import get_setting
 
     api_key = os.environ.get("ANTHROPIC_API_KEY") or resolve_api_key()
     base_url = os.environ.get("ANTHROPIC_BASE_URL") or get_setting("base_url") or _DEFAULT_BASE_URLS["anthropic"]
@@ -224,7 +224,7 @@ async def stream_message(
     max_tokens: int | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream a message — auto-selects backend based on model name."""
-    from gg_bond_code.config.settings import get_setting
+    from ..config.settings import get_setting
 
     if max_tokens is None:
         max_tokens = get_setting("context.max_tokens", 65536)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from gg_bond_code.init import init
+from .init import init
 
 
 @click.group(invoke_without_command=True)
@@ -21,7 +21,7 @@ def cli(ctx: click.Context, version: bool, print_mode: bool, model: str | None, 
     ctx.ensure_object(dict)
 
     if version:
-        from gg_bond_code import __version__
+        from . import __version__
         click.echo(f"{__version__} (GG Bond Code)")
         return
 
@@ -43,8 +43,8 @@ def cli(ctx: click.Context, version: bool, print_mode: bool, model: str | None, 
 
 async def _run_interactive(ctx: click.Context) -> None:
     """Launch interactive REPL session."""
-    from gg_bond_code.setup import setup
-    from gg_bond_code.repl import REPL
+    from .setup import setup
+    from .repl import REPL
 
     setup(cwd=ctx.obj["cwd"], model=ctx.obj["model"])
     repl = REPL(model=ctx.obj["model"])
@@ -55,8 +55,8 @@ async def _run_print_mode(ctx: click.Context) -> None:
     """Non-interactive: read prompt from stdin, print response, exit."""
     import sys
 
-    from gg_bond_code.setup import setup
-    from gg_bond_code.query import QueryRunner
+    from .setup import setup
+    from .query import QueryRunner
 
     prompt = sys.stdin.read().strip()
     if not prompt:
@@ -73,7 +73,7 @@ async def _run_print_mode(ctx: click.Context) -> None:
 @cli.command()
 def auth() -> None:
     """Configure API key."""
-    from gg_bond_code.config.auth import configure_api_key
+    from .config.auth import configure_api_key
 
     configure_api_key()
 
@@ -81,7 +81,7 @@ def auth() -> None:
 @cli.command()
 def config() -> None:
     """Show current configuration."""
-    from gg_bond_code.config.settings import show_config
+    from .config.settings import show_config
 
     show_config()
 
