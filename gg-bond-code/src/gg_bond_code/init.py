@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import functools
+import logging
 import sys
 from typing import Optional
 
 from .config.settings import load_settings
 from .config.auth import resolve_api_key
+
+logger = logging.getLogger(__name__)
 
 
 @functools.lru_cache(maxsize=1)

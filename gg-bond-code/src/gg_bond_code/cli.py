@@ -1,6 +1,7 @@
 """CLI entry point with fast-path short-circuits."""
 
 import sys
+from datetime import date
 
 from gg_bond_code import __version__
 

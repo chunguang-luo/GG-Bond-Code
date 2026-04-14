@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from abc import ABC, abstractmethod
 from typing import Any
@@ -33,6 +34,22 @@ class Tool(ABC):
     @abstractmethod
     async def execute(self, params: dict[str, Any]) -> ToolResult:
         """Execute the tool with given parameters."""
+
+    async def execute_safe(self, params: dict[str, Any]) -> ToolResult:
+        """Execute with timeout protection and exception catching."""
+        try:
+            return await asyncio.wait_for(
+                self.execute(params),
+                timeout=self.get_timeout(),
+            )
+        except asyncio.TimeoutError:
+            return ToolResult(output=f"Tool execution timed out ({self.get_timeout():.0f}s)", error=True)
+        except Exception as e:
+            return ToolResult(output=f"Tool error: {e}", error=True)
+
+    def get_timeout(self) -> float:
+        """Return timeout in seconds for execute_safe."""
+        return 120.0
 
     def to_api_format(self, family: str = "openai") -> dict[str, Any]:
         """Convert to API tool format. family='anthropic' or 'openai'."""

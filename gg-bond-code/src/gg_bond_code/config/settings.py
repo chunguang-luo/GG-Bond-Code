@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _DEFAULTS: dict[str, Any] = {
     "api_key": "",
@@ -46,11 +49,15 @@ def load_settings() -> None:
 
     # Layer 1: Global config (~/.ggbond/.settings.json)
     global_path = Path.home() / ".ggbond" / ".settings.json"
-    _deep_merge(_settings, _load_json(global_path))
+    if global_path.exists():
+        global_data = _load_json(global_path)
+        _deep_merge(_settings, global_data)
 
     # Layer 2: Project config (.ggbond/.settings.json)
     project_path = Path.cwd() / ".ggbond" / ".settings.json"
-    _deep_merge(_settings, _load_json(project_path))
+    if project_path.exists():
+        project_data = _load_json(project_path)
+        _deep_merge(_settings, project_data)
 
     # Layer 3: Environment variables override
     if env_key := os.environ.get("GGBOND_API_KEY"):
