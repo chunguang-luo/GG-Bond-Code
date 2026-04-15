@@ -33,10 +33,18 @@ def test_query_event_types():
     """QueryEvent supports all expected event types."""
     assert QueryEvent(type="text", content="hello").type == "text"
     assert QueryEvent(type="thinking", content="hmm").type == "thinking"
-    assert QueryEvent(type="tool_start", tool_name="Bash").type == "tool_start"
-    assert QueryEvent(type="tool_use", tool_name="Bash").type == "tool_use"
-    assert QueryEvent(type="tool_result", tool_name="Bash").type == "tool_result"
+    assert QueryEvent(type="tool_start", tool_name="Bash", tool_use_id="id-1").type == "tool_start"
+    assert QueryEvent(type="tool_use", tool_name="Bash", tool_use_id="id-1").type == "tool_use"
+    assert QueryEvent(type="tool_result", tool_name="Bash", tool_use_id="id-1").type == "tool_result"
     assert QueryEvent(type="error", content="fail").type == "error"
+
+
+def test_query_event_tool_use_id():
+    """QueryEvent carries tool_use_id for timing correlation."""
+    evt = QueryEvent(type="tool_start", tool_name="Bash", tool_use_id="call_abc123")
+    assert evt.tool_use_id == "call_abc123"
+    # Default is empty string
+    assert QueryEvent(type="text", content="hi").tool_use_id == ""
 
 
 def test_check_permission_deny_without_callback():

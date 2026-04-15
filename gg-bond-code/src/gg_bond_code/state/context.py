@@ -64,17 +64,22 @@ def create_store_context(
     """Create a ToolUseContext backed by the global Store.
 
     This is the standard context for the main conversation loop.
+    If no registry is provided, loads all default tools.
     """
     if store is None:
         from .store import Store
         store = Store()
+
+    if registry is None:
+        from ..tools.base import create_default_registry
+        registry = create_default_registry()
 
     return ToolUseContext(
         get_state=store.get,
         set_state=store.set,
         set_state_for_tasks=store.set,
         permissions=permissions or PermissionManager(),
-        registry=registry or ToolRegistry(),
+        registry=registry,
     )
 
 

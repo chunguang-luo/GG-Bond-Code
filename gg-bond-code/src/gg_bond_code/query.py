@@ -23,6 +23,7 @@ class QueryEvent:
     tool_input: dict[str, Any] = field(default_factory=dict)
     tool_result: str = ""
     tool_error: bool = False
+    tool_use_id: str = ""
 
 
 class QueryRunner:
@@ -97,6 +98,7 @@ class QueryRunner:
                                 type="tool_start",
                                 tool_name=evt["name"],
                                 tool_input={"id": evt["id"]},
+                                tool_use_id=evt["id"],
                             )
                         elif evt["type"] == "tool_input_delta":
                             # Internal detail — skip for now
@@ -112,6 +114,7 @@ class QueryRunner:
                                 content=f"Using tool: {evt['name']}",
                                 tool_name=evt["name"],
                                 tool_input=evt["input"],
+                                tool_use_id=evt["id"],
                             )
                         elif evt["type"] == "tool_use":
                             # OpenAI backend still uses this event type
@@ -121,6 +124,7 @@ class QueryRunner:
                                 content=f"Using tool: {evt['name']}",
                                 tool_name=evt["name"],
                                 tool_input=evt["input"],
+                                tool_use_id=evt.get("id", ""),
                             )
                 except Exception as e:
                     yield QueryEvent(type="error", content=str(e))
@@ -170,6 +174,12 @@ class QueryRunner:
                     # Anthropic: all tool_results in a single user message
                     tool_results_content: list[dict[str, Any]] = []
                     for tb in tool_use_blocks:
+                        # Emit tool_start for timing (if not already sent via streaming)
+                        yield QueryEvent(
+                            type="tool_start",
+                            tool_name=tb["name"],
+                            tool_use_id=tb["id"],
+                        )
                         decision = await self._check_permission(tb["name"], tb["input"])
                         if decision == PermissionDecision.DENY:
                             result = ToolResult(output="Permission denied", error=True)
@@ -181,6 +191,7 @@ class QueryRunner:
                             tool_name=tb["name"],
                             tool_result=result.output,
                             tool_error=result.error,
+                            tool_use_id=tb["id"],
                         )
 
                         tool_results_content.append({
@@ -194,6 +205,12 @@ class QueryRunner:
                 else:
                     # OpenAI: each tool result is a separate message
                     for tb in tool_use_blocks:
+                        # Emit tool_start for timing (OpenAI backend doesn't stream tool_start)
+                        yield QueryEvent(
+                            type="tool_start",
+                            tool_name=tb["name"],
+                            tool_use_id=tb["id"],
+                        )
                         decision = await self._check_permission(tb["name"], tb["input"])
                         if decision == PermissionDecision.DENY:
                             result = ToolResult(output="Permission denied", error=True)
@@ -205,6 +222,7 @@ class QueryRunner:
                             tool_name=tb["name"],
                             tool_result=result.output,
                             tool_error=result.error,
+                            tool_use_id=tb["id"],
                         )
 
                         messages.append({

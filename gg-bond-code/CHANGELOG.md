@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.3.0] - 2026-04-15
+
+### state/store.py — Store 订阅 + onChange + 深拷贝 + 重置
+
+- **subscribe(listener)**：新增订阅机制，返回 unsubscribe 函数，对齐 Claude Code 的 `store.subscribe` API
+- **onChange 回调**：构造函数接受 `on_change` 参数，`set()` 变更时先触发 onChange 再通知订阅者，支持集中式副作用
+- **相等性检查**：`set()` 中对旧值做 `==` 比较，值未变时跳过通知，避免不必要的工作
+- **snapshot() 深拷贝**：从 `dict(self._data)` 浅拷贝改为 `copy.deepcopy(self._data)`，防止外部通过引用修改 Store 内部数据
+- **reset() 方法**：清空数据并通知所有监听者（`__reset__` key），保留监听者列表，支持 session 切换和测试隔离
+- **reset_store() 模块函数**：重建全局单例，可选传入新的 onChange 回调
+
+### state/context.py — ToolUseContext 运行时上下文容器
+
+- **ToolUseContext dataclass**：解耦 QueryRunner 与全局 Store 的直接依赖，通过 `get_state/set_state` 函数间接访问状态
+  - `set_state`：可替换为 no-op（子 Agent 隔离场景）
+  - `set_state_for_tasks`：始终穿透到根 Store（对齐 Claude Code 的 `setAppStateForTasks`）
+  - `abort`：asyncio.Event，支持取消信号
+  - `agent_id/agent_type`：Agent 身份标识
+- **create_store_context()**：创建连接真实 Store 的主循环上下文，未提供 registry 时自动加载默认工具
+- **create_subagent_context()**：创建隔离的子 Agent 上下文
+  - `set_state` 默认 no-op（子 Agent 不应修改 UI 状态）
+  - `set_state_for_tasks` 始终穿透到父级根 Store
+  - `share_abort/share_set_state` 可选共享标志
+
+### config/settings.py — Store ↔ Settings 统一
+
+- **update_setting(key, value)**：新增公共 API，同时更新内存 settings + 持久化到项目配置文件
+- **is_persistable_key(key)**：判断 key 是否需要从 Store 自动同步回 Settings
+- **_persist_to_project()**：将单个 key-value 写入项目 `.ggbond/.settings.json`
+
+### setup.py — 会话初始化增强
+
+- **Store ↔ Settings 桥接**：`reset_store(on_change=_on_store_change)`，持久化 key（如 model）变更时自动同步到 Settings
+- **UI 偏好 Store 化**：`ui.show_thinking`、`ui.show_tool_details` 初始化到 Store，替代 REPL 实例属性
+
+### query.py — QueryEvent tool_use_id + ToolUseContext 集成
+
+- **QueryEvent.tool_use_id**：新增字段，用于工具计时精确匹配（替代之前按 tool_name 近似匹配）
+- **ToolUseContext 集成**：QueryRunner 接受可选 `context: ToolUseContext` 参数，不再直接访问全局 Store
+- **补发 tool_start 事件**：在非流式路径（Anthropic tool_use blocks / OpenAI tool_calls）中补发 `tool_start` 事件，确保 REPL 计时覆盖所有场景
+
+### repl.py — 工具计时精确匹配
+
+- **tool_use_id 匹配**：使用 `tool_use_id` 精确关联 tool_start 和 tool_result，替代之前遍历查找的近似匹配
+- **tool_use 兜底计时**：`tool_use` 事件到达时若 `tool_start_times` 中无对应 ID，自动记录开始时间
+
+### permissions/manager.py — 封装修复
+
+- 使用 `update_setting()` 替代直接调用 `_save_json`，修复封装违规
+- `_allowed`/`_denied` 使用 `list()` 拷贝，避免共享引用变异
+
+### tests/unit/ — 新增测试
+
+- `test_store.py`：283 行，覆盖 get/set/subscribe/onChange/reset/snapshot 深拷贝/相等性检查
+- `test_context.py`：247 行，覆盖 ToolUseContext 创建、create_store_context、create_subagent_context 隔离行为
+- `test_query_runner.py`：新增 `test_query_event_tool_use_id` 测试
+
 ## [0.2.0] - 2026-04-14
 
 ### api/client.py — 流式事件 + 重试 + 超时

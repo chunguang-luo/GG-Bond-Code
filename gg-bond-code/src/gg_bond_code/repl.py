@@ -139,14 +139,16 @@ class REPL:
                         self.console.file.flush()
 
                 elif event.type == "tool_start":
-                    tool_id = event.tool_input.get("id", "")
-                    tool_start_times[tool_id] = time.monotonic()
+                    if event.tool_use_id:
+                        tool_start_times[event.tool_use_id] = time.monotonic()
                     self.console.print(
                         f"  ⚙ {event.tool_name}...",
                         style="dim cyan",
                     )
 
                 elif event.type == "tool_use":
+                    if event.tool_use_id and event.tool_use_id not in tool_start_times:
+                        tool_start_times[event.tool_use_id] = time.monotonic()
                     self.console.print()
                     self.console.print(
                         f"  ⚙ {event.tool_name}({self._format_params(event.tool_input)})",
@@ -155,11 +157,9 @@ class REPL:
 
                 elif event.type == "tool_result":
                     elapsed = ""
-                    # Try to find matching start time (approximate match by tool_name)
-                    for tid, t0 in list(tool_start_times.items()):
+                    if event.tool_use_id and event.tool_use_id in tool_start_times:
+                        t0 = tool_start_times.pop(event.tool_use_id)
                         elapsed = f" ({time.monotonic() - t0:.1f}s)"
-                        del tool_start_times[tid]
-                        break
 
                     if event.tool_error:
                         self.console.print(
