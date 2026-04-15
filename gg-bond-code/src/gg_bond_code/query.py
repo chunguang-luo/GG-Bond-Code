@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, Callable, Awaitable
 
 from .api.client import stream_message, get_model_family
 from .prompts.system import build_system_prompt
+from .state.context import ToolUseContext, create_store_context
 from .state.store import Store
 from .tools.base import ToolRegistry, ToolResult, create_default_registry
 from .permissions.manager import PermissionManager, PermissionDecision
@@ -33,22 +34,46 @@ class QueryRunner:
         tool_registry: ToolRegistry | None = None,
         max_turns: int = 50,
         permission_callback: Callable[[str, dict[str, Any]], Awaitable[PermissionDecision]] | None = None,
+        context: ToolUseContext | None = None,
     ) -> None:
-        self.store = Store()
-        self.model = model or self.store.get("model", "deepseek-chat")
+        # Build or use provided context
+        if context is not None:
+            self._context = context
+            self._owns_context = False
+        else:
+            store = Store()
+            self._context = create_store_context(
+                store=store,
+                registry=tool_registry or create_default_registry(),
+            )
+            self._owns_context = True
+
+        ctx = self._context
+        self.model = model or ctx.get_state("model") or "deepseek-chat"
         self.family = get_model_family(self.model)
-        self.registry = tool_registry or create_default_registry()
-        self.permissions = PermissionManager()
         self.max_turns = max_turns
-        self.system_prompt = build_system_prompt(cwd=self.store.get("cwd"))
+        self.system_prompt = build_system_prompt(cwd=ctx.get_state("cwd"))
         self._permission_callback = permission_callback
+
+    @property
+    def permissions(self) -> PermissionManager:
+        return self._context.permissions
+
+    @permissions.setter
+    def permissions(self, value: PermissionManager) -> None:
+        self._context.permissions = value
+
+    @property
+    def registry(self) -> ToolRegistry:
+        return self._context.registry
 
     async def run(self, user_message: str) -> AsyncIterator[QueryEvent]:
         """Run a single user message through the conversation loop."""
-        messages: list[dict[str, Any]] = self.store.get("messages", [])
+        ctx = self._context
+        messages: list[dict[str, Any]] = ctx.get_state("messages") or []
         messages.append({"role": "user", "content": user_message})
 
-        tools = self.registry.to_api_format(self.family)
+        tools = ctx.registry.to_api_format(self.family)
 
         try:
             for _ in range(self.max_turns):
@@ -189,12 +214,12 @@ class QueryRunner:
                         })
 
         finally:
-            # Persist messages even if cancelled
-            self.store.set("messages", messages)
+            # Persist messages even if cancelled — use context's set_state
+            ctx.set_state("messages", messages)
 
     async def _check_permission(self, tool_name: str, params: dict[str, Any]) -> PermissionDecision:
         """Check permission, invoking callback for ASK decisions."""
-        decision = self.permissions.check(tool_name, params)
+        decision = self._context.permissions.check(tool_name, params)
         if decision == PermissionDecision.ASK:
             if self._permission_callback is not None:
                 decision = await self._permission_callback(tool_name, params)
@@ -205,7 +230,7 @@ class QueryRunner:
 
     async def _execute_tool(self, name: str, params: dict[str, Any]) -> ToolResult:
         """Execute a tool by name using the safe wrapper."""
-        tool = self.registry.get(name)
+        tool = self._context.registry.get(name)
         if not tool:
             return ToolResult(output=f"Unknown tool: {name}", error=True)
         return await tool.execute_safe(params)

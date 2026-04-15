@@ -78,6 +78,22 @@ class _Store:
         self._listeners.add(listener)
         return lambda: self._listeners.discard(listener)
 
+    def reset(self) -> None:
+        """Reset store to empty state.
+
+        Useful for:
+        - Session switching
+        - Testing isolation
+        - /clear command cleanup
+
+        Notifies listeners with a special "__reset__" key.
+        """
+        old_data = self._data
+        self._data = {}
+        # Notify listeners about reset
+        for listener in self._listeners:
+            listener("__reset__", None, old_data)
+
 
 # Module-level singleton instance
 _store_instance = _Store()

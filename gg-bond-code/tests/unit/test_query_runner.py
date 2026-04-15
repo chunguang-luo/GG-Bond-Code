@@ -7,11 +7,11 @@ from gg_bond_code.query import QueryRunner, QueryEvent
 from gg_bond_code.permissions.manager import PermissionDecision
 
 
-def test_query_runner_store_reuse():
-    """QueryRunner reuses store instance from __init__."""
+def test_query_runner_has_context():
+    """QueryRunner has a ToolUseContext."""
     runner = QueryRunner(model="deepseek-chat")
-    assert hasattr(runner, "store")
-    assert runner.store is not None
+    assert hasattr(runner, "_context")
+    assert runner._context is not None
 
 
 def test_query_runner_default_no_callback():

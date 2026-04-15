@@ -224,3 +224,60 @@ def test_reset_store_with_on_change():
     assert calls == ["x"]
     # Clean up — reset to default for other tests
     reset_store()
+
+
+# ── reset() instance method ───────────────────────────────────────────
+
+def test_reset_clears_data():
+    """reset() clears all stored data."""
+    store = _Store()
+    store.set("a", 1)
+    store.set("b", 2)
+    store.reset()
+    assert store.get("a") is None
+    assert store.get("b") is None
+    assert store.has("a") is False
+
+
+def test_reset_notifies_listeners():
+    """reset() notifies listeners with __reset__ key."""
+    notifications = []
+    store = _Store()
+    store.subscribe(lambda k, v, o: notifications.append(k))
+
+    store.set("x", 1)
+    store.reset()
+    assert "__reset__" in notifications
+
+
+def test_reset_passes_old_data_to_listener():
+    """reset() passes old data as old_value to listeners."""
+    captured = []
+    store = _Store()
+    store.set("x", 1)
+    store.subscribe(lambda k, v, o: captured.append((k, o)))
+
+    store.reset()
+    # The listener should receive the old data dict
+    assert captured[0][0] == "__reset__"
+    assert captured[0][1] == {"x": 1}
+
+
+def test_reset_keeps_listeners():
+    """reset() does not remove listeners."""
+    calls = []
+    store = _Store()
+    store.subscribe(lambda k, v, o: calls.append(k))
+
+    store.reset()
+    store.set("new_key", "new_val")
+    assert "new_key" in calls
+
+
+def test_reset_keeps_on_change():
+    """reset() does not remove the onChange callback."""
+    calls = []
+    store = _Store(on_change=lambda k, v, o: calls.append(k))
+    store.reset()
+    store.set("x", 1)
+    assert "x" in calls

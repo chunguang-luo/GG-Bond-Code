@@ -10,6 +10,7 @@ from rich.panel import Panel
 
 from .query import QueryRunner, QueryEvent
 from .state.store import Store
+from .state.context import create_store_context
 from .permissions.manager import PermissionDecision
 
 
@@ -19,7 +20,8 @@ class REPL:
     def __init__(self, model: str | None = None) -> None:
         self.model = model
         self.console = Console()
-        self.runner = QueryRunner(model=model, permission_callback=self._ask_permission)
+        self._context = create_store_context()
+        self.runner = QueryRunner(model=model, permission_callback=self._ask_permission, context=self._context)
         self.running = True
         self._last_interrupt_time: float = 0.0  # for double-Ctrl+C exit
         self._current_task: asyncio.Task | None = None  # track running query task
@@ -199,7 +201,8 @@ class REPL:
             return False
         elif cmd == "/clear":
             store.set("messages", [])
-            self.runner = QueryRunner(model=self.model, permission_callback=self._ask_permission)
+            self._context = create_store_context()
+            self.runner = QueryRunner(model=self.model, permission_callback=self._ask_permission, context=self._context)
             self.console.clear()
             self._print_welcome()
             return False
