@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Awaitable
 
@@ -23,6 +24,7 @@ class QueryEvent:
     tool_input: dict[str, Any] = field(default_factory=dict)
     tool_result: str = ""
     tool_error: bool = False
+    tool_purpose: str = ""  # model's text before this tool call, explaining intent
     tool_use_id: str = ""
 
 
@@ -79,6 +81,7 @@ class QueryRunner:
         try:
             for _ in range(self.max_turns):
                 text_parts: list[str] = []
+                thinking_parts: list[str] = []
                 tool_use_blocks: list[dict[str, Any]] = []
 
                 try:
@@ -92,6 +95,7 @@ class QueryRunner:
                             text_parts.append(evt["text"])
                             yield QueryEvent(type="text", content=evt["text"])
                         elif evt["type"] == "thinking_delta":
+                            thinking_parts.append(evt["thinking"])
                             yield QueryEvent(type="thinking", content=evt["thinking"])
                         elif evt["type"] == "tool_start":
                             yield QueryEvent(
@@ -115,6 +119,8 @@ class QueryRunner:
                                 tool_name=evt["name"],
                                 tool_input=evt["input"],
                                 tool_use_id=evt["id"],
+                                tool_purpose=("".join(text_parts).strip()
+                                              or "".join(thinking_parts[-3:]).strip()),
                             )
                         elif evt["type"] == "tool_use":
                             # OpenAI backend still uses this event type
@@ -125,9 +131,11 @@ class QueryRunner:
                                 tool_name=evt["name"],
                                 tool_input=evt["input"],
                                 tool_use_id=evt.get("id", ""),
+                                tool_purpose=("".join(thinking_parts).strip()),
                             )
                 except Exception as e:
-                    yield QueryEvent(type="error", content=str(e))
+                    tb = traceback.format_exc()
+                    yield QueryEvent(type="error", content=f"{e}\n{tb}")
                     return
 
                 # Build assistant message for history

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any, AsyncIterator
 
 import httpx
@@ -31,7 +32,7 @@ _DEFAULT_BASE_URLS: dict[str, str] = {
 
 _MAX_OUTPUT_TOKENS: dict[str, int] = {
     "anthropic": 8192,
-    "openai": 65536,
+    "openai": 8192,
 }
 
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
@@ -108,7 +109,7 @@ async def _stream_openai_inner(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     system: str,
-    model: str = "deepseek-chat",
+    model: str,
     max_tokens: int = 8192,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream from an OpenAI-compatible API. Yields normalized events."""
@@ -188,7 +189,7 @@ async def _stream_openai(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     system: str,
-    model: str = "deepseek-chat",
+    model: str,
     max_tokens: int = 8192,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream from OpenAI-compatible API with retry."""
@@ -288,24 +289,50 @@ async def _stream_anthropic(
         yield evt
 
 
+# ── Surrogate sanitization ───────────────────────────────────────────
+
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def _sanitize_surrogates(obj: Any) -> Any:
+    """Recursively remove UTF-16 surrogate characters from strings.
+
+    Surrogates appear when Python decodes bytes with ``surrogateescape``
+    (e.g. filenames or tool output with non-UTF-8 bytes).  They cannot be
+    re-encoded to UTF-8, which causes ``UnicodeEncodeError`` when httpx
+    serializes the request body to JSON.
+    """
+    if isinstance(obj, str):
+        return _SURROGATE_RE.sub("\ufffd", obj)
+    if isinstance(obj, dict):
+        return {k: _sanitize_surrogates(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_surrogates(v) for v in obj]
+    return obj
+
+
 # ── Unified entry point ─────────────────────────────────────────────
 
 async def stream_message(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     system: str,
-    model: str = "deepseek-chat",
+    model: str,
     max_tokens: int | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream a message — auto-selects backend based on model name."""
     from ..config.settings import get_setting
 
     if max_tokens is None:
-        max_tokens = get_setting("context.max_tokens", 65536)
+        max_tokens = get_setting("context.max_tokens", 8192)
 
     family = _model_family(model)
     # Clamp to model family's max output limit
     max_tokens = min(max_tokens, _MAX_OUTPUT_TOKENS[family])
+
+    # Sanitize surrogates in messages before sending to API
+    messages = _sanitize_surrogates(messages)
+    system = _sanitize_surrogates(system)
 
     if family == "anthropic":
         async for evt in _stream_anthropic(messages, tools, system, model, max_tokens):

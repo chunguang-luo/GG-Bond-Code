@@ -6,6 +6,7 @@ import asyncio
 import time
 
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 
 from .query import QueryRunner, QueryEvent
@@ -84,7 +85,14 @@ class REPL:
     def _read_input(self) -> str | None:
         """Read user input with a prompt."""
         try:
-            return input("ggbond> ").strip()
+            # Green text for user input (ANSI escape inherited from prompt)
+            user_input = input("\x1b[32mggbond> \x1b[32m").strip()
+            # Reset color so subsequent output is not green
+            self.console.file.write("\x1b[0m")
+            if user_input:
+                # Clear the line and reprint only the input text in green
+                self.console.file.flush()
+            return user_input
         except EOFError:
             self.running = False
             return None
@@ -109,25 +117,32 @@ class REPL:
         self._last_interrupt_time = now
 
     async def _run_query(self, user_input: str) -> None:
-        """Run a query and display results."""
+        """Run a query and display results.
+
+        Strategy: stream raw text via print for instant feedback,
+        then re-render the full response as Markdown once complete.
+        """
         text_parts: list[str] = []
         thinking_parts: list[str] = []
         tool_start_times: dict[str, float] = {}  # tool_use_id → start time
         in_thinking = False  # track if we're inside a thinking block
+        output_line_count = 0  # track total output lines for cursor positioning
         gen = None  # track the async generator for cleanup
 
         try:
             gen = self.runner.run(user_input)
             async for event in gen:
                 if event.type == "text":
-                    # If we were showing thinking, close it before text output
                     if in_thinking and self.show_thinking:
                         self.console.print("\n< /Thinking >\n", style="dim", end="")
+                        output_line_count += 1
                         in_thinking = False
-                    # Stream text directly
+                    text_parts.append(event.content)
+                    # Stream raw text for instant feedback
+                    content_lines = event.content.split("\n")
+                    output_line_count += len(content_lines) - 1
                     self.console.print(event.content, end="", highlight=False)
                     self.console.file.flush()
-                    text_parts.append(event.content)
 
                 elif event.type == "thinking":
                     thinking_parts.append(event.content)
@@ -142,18 +157,24 @@ class REPL:
                     if event.tool_use_id:
                         tool_start_times[event.tool_use_id] = time.monotonic()
                     self.console.print(
-                        f"  ⚙ {event.tool_name}...",
+                        f"\n  ⚙ {event.tool_name}...",
                         style="dim cyan",
                     )
+                    output_line_count += 1
 
                 elif event.type == "tool_use":
                     if event.tool_use_id and event.tool_use_id not in tool_start_times:
                         tool_start_times[event.tool_use_id] = time.monotonic()
                     self.console.print()
+                    output_line_count += 1
+                    if event.tool_purpose:
+                        self.console.print(f"  {event.tool_purpose}", style="dim")
+                        output_line_count += 1
                     self.console.print(
                         f"  ⚙ {event.tool_name}({self._format_params(event.tool_input)})",
                         style="dim cyan",
                     )
+                    output_line_count += 1
 
                 elif event.type == "tool_result":
                     elapsed = ""
@@ -163,22 +184,26 @@ class REPL:
 
                     if event.tool_error:
                         self.console.print(
-                            f"  ✗ {event.tool_name}{elapsed}: {event.tool_result[:200]}",
+                            f"  ✗ {event.tool_name}{elapsed}",
                             style="red",
                         )
+                        output_line_count += 1
+                        self.console.print(f"    {event.tool_result}", style="dim red")
+                        output_line_count += 1
                     else:
                         result = event.tool_result
                         if len(result) > 500:
                             result = result[:500] + "..."
                         self.console.print(f"  ✓ {event.tool_name}{elapsed}", style="green")
+                        output_line_count += 1
                         if self.show_tool_details and result.strip():
                             self.console.print(f"    {result}", style="dim")
+                            output_line_count += 1
 
                 elif event.type == "error":
-                    self.console.print(f"\nError: {event.content}", style="bold red")
+                    self.console.print(Panel(event.content, title="Error", border_style="red"))
 
         except asyncio.CancelledError:
-            # Query was cancelled by Ctrl+C — clean up the generator
             if gen is not None:
                 await gen.aclose()
             self.console.print("\n[query stopped]", style="yellow")
@@ -187,9 +212,18 @@ class REPL:
         # Close thinking block if still open
         if in_thinking and self.show_thinking:
             self.console.print("\n< /Thinking >\n", style="dim")
+            output_line_count += 1
 
-        if text_parts:
-            self.console.print()  # newline after response
+        # Re-render the full text response as formatted Markdown
+        full_text = "".join(text_parts).strip()
+        if full_text:
+            # Move cursor up to overwrite all output
+            if output_line_count > 0:
+                self.console.file.write(f"\x1b[{output_line_count}A")  # cursor up
+            self.console.file.write("\x1b[J")  # clear from cursor down
+            self.console.file.flush()
+            self.console.print(Markdown(full_text))
+            self.console.print()
 
     def _handle_command(self, command: str) -> bool:
         """Handle slash commands. Returns True if should continue REPL."""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import traceback
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -45,7 +46,8 @@ class Tool(ABC):
         except asyncio.TimeoutError:
             return ToolResult(output=f"Tool execution timed out ({self.get_timeout():.0f}s)", error=True)
         except Exception as e:
-            return ToolResult(output=f"Tool error: {e}", error=True)
+            tb = traceback.format_exc()
+            return ToolResult(output=f"Tool error: {e}\n{tb}", error=True)
 
     def get_timeout(self) -> float:
         """Return timeout in seconds for execute_safe."""
