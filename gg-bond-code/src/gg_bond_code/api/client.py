@@ -236,7 +236,7 @@ def _get_anthropic_client() -> Any:
     return anthropic.AsyncAnthropic(api_key=api_key, base_url=base_url)
 
 
-async def _stream_anthropic(
+async def _stream_anthropic_inner(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     system: str,
@@ -272,6 +272,20 @@ async def _stream_anthropic(
                     "name": block.name,
                     "input": block.input,
                 }
+
+
+async def _stream_anthropic(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    system: str,
+    model: str = "claude-sonnet-4-20250514",
+    max_tokens: int = 8192,
+) -> AsyncIterator[dict[str, Any]]:
+    """Stream from Anthropic API with retry."""
+    async for evt in _retry_stream(
+        _stream_anthropic_inner, messages, tools, system, model, max_tokens
+    ):
+        yield evt
 
 
 # ── Unified entry point ─────────────────────────────────────────────
