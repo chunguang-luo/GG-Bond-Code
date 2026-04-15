@@ -128,6 +128,8 @@ class REPL:
         in_thinking = False  # track if we're inside a thinking block
         output_line_count = 0  # track total output lines for cursor positioning
         gen = None  # track the async generator for cleanup
+        first_text = True  # track if this is the first text event
+        seen_tool = False  # track if we've seen any tool event
 
         try:
             gen = self.runner.run(user_input)
@@ -135,10 +137,20 @@ class REPL:
                 if event.type == "text":
                     if in_thinking and self.show_thinking:
                         self.console.print("\n< /Thinking >\n", style="dim", end="")
-                        output_line_count += 1
+                        output_line_count += 2  # newline + tag line
                         in_thinking = False
                     text_parts.append(event.content)
                     # Stream raw text for instant feedback
+                    if first_text:
+                        # First text starts on a new line
+                        self.console.print()
+                        output_line_count += 1
+                        first_text = False
+                    elif seen_tool:
+                        # After tools, text also starts on a new line
+                        self.console.print()
+                        output_line_count += 1
+                        seen_tool = False
                     content_lines = event.content.split("\n")
                     output_line_count += len(content_lines) - 1
                     self.console.print(event.content, end="", highlight=False)
@@ -154,15 +166,17 @@ class REPL:
                         self.console.file.flush()
 
                 elif event.type == "tool_start":
+                    seen_tool = True
                     if event.tool_use_id:
                         tool_start_times[event.tool_use_id] = time.monotonic()
                     self.console.print(
                         f"\n  ⚙ {event.tool_name}...",
                         style="dim cyan",
                     )
-                    output_line_count += 1
+                    output_line_count += 2  # newline + tool line (print adds newline)
 
                 elif event.type == "tool_use":
+                    seen_tool = True
                     if event.tool_use_id and event.tool_use_id not in tool_start_times:
                         tool_start_times[event.tool_use_id] = time.monotonic()
                     self.console.print()
@@ -177,6 +191,7 @@ class REPL:
                     output_line_count += 1
 
                 elif event.type == "tool_result":
+                    seen_tool = True
                     elapsed = ""
                     if event.tool_use_id and event.tool_use_id in tool_start_times:
                         t0 = tool_start_times.pop(event.tool_use_id)
@@ -188,8 +203,9 @@ class REPL:
                             style="red",
                         )
                         output_line_count += 1
+                        error_lines = event.tool_result.split("\n")
                         self.console.print(f"    {event.tool_result}", style="dim red")
-                        output_line_count += 1
+                        output_line_count += len(error_lines)
                     else:
                         result = event.tool_result
                         if len(result) > 500:
@@ -197,11 +213,17 @@ class REPL:
                         self.console.print(f"  ✓ {event.tool_name}{elapsed}", style="green")
                         output_line_count += 1
                         if self.show_tool_details and result.strip():
+                            result_lines = result.split("\n")
                             self.console.print(f"    {result}", style="dim")
-                            output_line_count += 1
+                            output_line_count += len(result_lines)
 
                 elif event.type == "error":
+                    seen_tool = True
                     self.console.print(Panel(event.content, title="Error", border_style="red"))
+                    # Estimate Panel lines (title + content + border)
+                    # This is approximate; Panel rendering is complex
+                    error_lines = event.content.count("\n") + 4  # border, title, content, border
+                    output_line_count += error_lines
 
         except asyncio.CancelledError:
             if gen is not None:
@@ -212,7 +234,7 @@ class REPL:
         # Close thinking block if still open
         if in_thinking and self.show_thinking:
             self.console.print("\n< /Thinking >\n", style="dim")
-            output_line_count += 1
+            output_line_count += 2  # newline + tag line
 
         # Re-render the full text response as formatted Markdown
         full_text = "".join(text_parts).strip()
