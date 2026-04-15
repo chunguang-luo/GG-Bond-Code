@@ -22,6 +22,7 @@ class REPL:
         self.runner = QueryRunner(model=model, permission_callback=self._ask_permission)
         self.running = True
         self.show_thinking = False  # toggle with /thinking command
+        self.show_tool_details = False  # toggle with /tools command
         self._last_interrupt_time: float = 0.0  # for double-Ctrl+C exit
         self._current_task: asyncio.Task | None = None  # track running query task
 
@@ -103,7 +104,7 @@ class REPL:
                 if event.type == "text":
                     # If we were showing thinking, close it before text output
                     if in_thinking and self.show_thinking:
-                        self.console.print("\n< /Thinking > ", style="dim", end="")
+                        self.console.print("\n< /Thinking >\n", style="dim", end="")
                         in_thinking = False
                     # Stream text directly
                     self.console.print(event.content, end="", highlight=False)
@@ -152,6 +153,8 @@ class REPL:
                         if len(result) > 500:
                             result = result[:500] + "..."
                         self.console.print(f"  ✓ {event.tool_name}{elapsed}", style="green")
+                        if self.show_tool_details and result.strip():
+                            self.console.print(f"    {result}", style="dim")
 
                 elif event.type == "error":
                     self.console.print(f"\nError: {event.content}", style="bold red")
@@ -165,7 +168,7 @@ class REPL:
 
         # Close thinking block if still open
         if in_thinking and self.show_thinking:
-            self.console.print("\n< /Thinking >", style="dim")
+            self.console.print("\n< /Thinking >\n", style="dim")
 
         if text_parts:
             self.console.print()  # newline after response
@@ -188,6 +191,11 @@ class REPL:
             self.show_thinking = not self.show_thinking
             state = "ON" if self.show_thinking else "OFF"
             self.console.print(f"Thinking display: [green]{state}[/green]")
+            return False
+        elif cmd == "/show-tool-details":
+            self.show_tool_details = not self.show_tool_details
+            state = "ON" if self.show_tool_details else "OFF"
+            self.console.print(f"Tool details: [green]{state}[/green]")
             return False
         elif cmd == "/help":
             self._print_help()
@@ -231,6 +239,7 @@ class REPL:
                 "/clear    - Clear conversation\n"
                 "/compact  - Compact conversation history\n"
                 "/thinking - Toggle thinking display\n"
+                "/show-tool-details - Toggle tool result details\n"
                 "/model    - Show current model\n"
                 "/exit     - Exit the REPL",
                 title="Commands",
