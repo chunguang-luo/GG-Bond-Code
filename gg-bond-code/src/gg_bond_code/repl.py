@@ -141,15 +141,11 @@ class REPL:
                         in_thinking = False
                     text_parts.append(event.content)
                     # Stream raw text for instant feedback
-                    if first_text:
-                        # First text starts on a new line
+                    if seen_tool or first_text:
+                        # After tools or first text: start on a new line
                         self.console.print()
                         output_line_count += 1
                         first_text = False
-                    elif seen_tool:
-                        # After tools, text also starts on a new line
-                        self.console.print()
-                        output_line_count += 1
                         seen_tool = False
                     content_lines = event.content.split("\n")
                     output_line_count += len(content_lines) - 1
@@ -161,7 +157,10 @@ class REPL:
                     if self.show_thinking:
                         if not in_thinking:
                             self.console.print("< Thinking > ", style="dim", end="")
+                            output_line_count += 1  # tag line
                             in_thinking = True
+                        content_lines = event.content.split("\n")
+                        output_line_count += len(content_lines) - 1
                         self.console.print(event.content, end="", style="dim italic")
                         self.console.file.flush()
 
