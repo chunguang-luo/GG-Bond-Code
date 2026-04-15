@@ -21,10 +21,26 @@ class REPL:
         self.console = Console()
         self.runner = QueryRunner(model=model, permission_callback=self._ask_permission)
         self.running = True
-        self.show_thinking = False  # toggle with /thinking command
-        self.show_tool_details = False  # toggle with /tools command
         self._last_interrupt_time: float = 0.0  # for double-Ctrl+C exit
         self._current_task: asyncio.Task | None = None  # track running query task
+
+    # ── UI preference accessors (backed by Store) ─────────────────────
+
+    @property
+    def show_thinking(self) -> bool:
+        return Store().get("ui.show_thinking", False)
+
+    @show_thinking.setter
+    def show_thinking(self, value: bool) -> None:
+        Store().set("ui.show_thinking", value)
+
+    @property
+    def show_tool_details(self) -> bool:
+        return Store().get("ui.show_tool_details", False)
+
+    @show_tool_details.setter
+    def show_tool_details(self, value: bool) -> None:
+        Store().set("ui.show_tool_details", value)
 
     async def run(self) -> None:
         """Main REPL loop."""
@@ -176,12 +192,12 @@ class REPL:
     def _handle_command(self, command: str) -> bool:
         """Handle slash commands. Returns True if should continue REPL."""
         cmd = command.strip().lower()
+        store = Store()
 
         if cmd in ("/exit", "/quit", "/q"):
             self.running = False
             return False
         elif cmd == "/clear":
-            store = Store()
             store.set("messages", [])
             self.runner = QueryRunner(model=self.model, permission_callback=self._ask_permission)
             self.console.clear()
@@ -202,7 +218,6 @@ class REPL:
             return False
         elif cmd == "/compact":
             self.console.print("[dim]Compacting conversation...[/dim]")
-            store = Store()
             messages = store.get("messages", [])
             if messages:
                 # Simple compact: keep only last 4 messages
@@ -211,7 +226,6 @@ class REPL:
                 self.console.print(f"[green]Compacted {len(messages)} → {len(compacted)} messages[/green]")
             return False
         elif cmd == "/model":
-            store = Store()
             self.console.print(f"Current model: {store.get('model', 'unknown')}")
             return False
         else:

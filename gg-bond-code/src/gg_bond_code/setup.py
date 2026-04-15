@@ -5,7 +5,18 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .state.store import Store
+from .state.store import Store, reset_store
+from .config.settings import get_setting, is_persistable_key, update_setting
+
+
+def _on_store_change(key: str, new_value: object, old_value: object) -> None:
+    """Store onChange callback — syncs persistable keys back to Settings.
+
+    Mirrors Claude Code's onChangeAppState: a single place where state
+    changes trigger side-effects (persistence, external notifications).
+    """
+    if is_persistable_key(key):
+        update_setting(key, new_value)
 
 
 def setup(cwd: str, model: str | None = None) -> None:
@@ -13,14 +24,13 @@ def setup(cwd: str, model: str | None = None) -> None:
     # 1. Set working directory
     os.chdir(cwd)
 
-    # 2. Initialize global store
+    # 2. Initialize global store with onChange for Store ↔ Settings sync
+    reset_store(on_change=_on_store_change)
     store = Store()
     store.set("cwd", cwd)
 
-
-    # Model priority: CLI flag → config.toml → default
+    # Model priority: CLI flag → config → default
     if not model:
-        from .config.settings import get_setting
         model = get_setting("model", "deepseek-chat")
     store.set("model", model)
 
@@ -30,6 +40,10 @@ def setup(cwd: str, model: str | None = None) -> None:
 
     # 4. Initialize conversation history
     store.set("messages", [])
+
+    # 5. Initialize UI preferences in Store (optimization 3)
+    store.set("ui.show_thinking", False)
+    store.set("ui.show_tool_details", False)
 
 
 def _find_project_root(start: str) -> str:

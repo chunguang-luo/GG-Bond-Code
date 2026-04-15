@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from .settings import get_setting, _load_json, _save_json
+from .settings import get_setting, update_setting
 
 from pathlib import Path
 
@@ -38,8 +38,12 @@ def configure_api_key() -> None:
         print("No key provided.")
         return
 
+    # Persist to global config (not project config)
     config_path = Path.home() / ".ggbond" / ".settings.json"
+    from .settings import _load_json, _save_json
     data = _load_json(config_path)
     data["api_key"] = key
     _save_json(config_path, data)
+    # Also update in-memory settings
+    update_setting("api_key", key)
     print(f"API key saved to {config_path}")

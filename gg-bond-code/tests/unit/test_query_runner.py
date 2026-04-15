@@ -1,5 +1,8 @@
 """Tests for query.py — QueryRunner initialization and permission callback."""
 
+import asyncio
+from unittest.mock import patch
+
 from gg_bond_code.query import QueryRunner, QueryEvent
 from gg_bond_code.permissions.manager import PermissionDecision
 
@@ -38,9 +41,13 @@ def test_query_event_types():
 
 def test_check_permission_deny_without_callback():
     """ASK decision becomes DENY when no callback is set (print mode)."""
-    runner = QueryRunner(model="deepseek-chat")
-    result = asyncio_run(runner._check_permission("Bash", {"command": "rm -rf /"}))
-    assert result == PermissionDecision.DENY
+    with patch("gg_bond_code.query.PermissionManager") as MockPM:
+        pm = MockPM.return_value
+        pm.check.return_value = PermissionDecision.ASK
+        runner = QueryRunner(model="deepseek-chat")
+        runner.permissions = pm
+        result = asyncio.run(runner._check_permission("Bash", {"command": "rm -rf /"}))
+        assert result == PermissionDecision.DENY
 
 
 def test_check_permission_uses_callback():
@@ -48,20 +55,21 @@ def test_check_permission_uses_callback():
     async def allow_all(tool_name, params):
         return PermissionDecision.ALLOW
 
-    runner = QueryRunner(model="deepseek-chat", permission_callback=allow_all)
-    result = asyncio_run(runner._check_permission("Bash", {"command": "rm -rf /"}))
-    assert result == PermissionDecision.ALLOW
+    with patch("gg_bond_code.query.PermissionManager") as MockPM:
+        pm = MockPM.return_value
+        pm.check.return_value = PermissionDecision.ASK
+        runner = QueryRunner(model="deepseek-chat", permission_callback=allow_all)
+        runner.permissions = pm
+        result = asyncio.run(runner._check_permission("Bash", {"command": "rm -rf /"}))
+        assert result == PermissionDecision.ALLOW
 
 
 def test_check_permission_read_only_allowed():
     """Read-only tools are allowed without callback."""
-    runner = QueryRunner(model="deepseek-chat")
-    result = asyncio_run(runner._check_permission("Read", {"file_path": "/tmp/test"}))
-    assert result == PermissionDecision.ALLOW
-
-
-# Helper
-import asyncio
-
-def asyncio_run(coro):
-    return asyncio.run(coro)
+    with patch("gg_bond_code.query.PermissionManager") as MockPM:
+        pm = MockPM.return_value
+        pm.check.return_value = PermissionDecision.ALLOW
+        runner = QueryRunner(model="deepseek-chat")
+        runner.permissions = pm
+        result = asyncio.run(runner._check_permission("Read", {"file_path": "/tmp/test"}))
+        assert result == PermissionDecision.ALLOW

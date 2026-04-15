@@ -25,6 +25,9 @@ _DEFAULTS: dict[str, Any] = {
 
 _settings: dict[str, Any] = {}
 
+# Keys that should be persisted back to project config when changed via Store
+_PERSISTABLE_KEYS: set[str] = {"model"}
+
 
 def _load_json(path: Path) -> dict[str, Any]:
     """Load a JSON file, return empty dict on failure."""
@@ -78,6 +81,19 @@ def get_setting(key: str, default: Any = None) -> Any:
     return value
 
 
+def update_setting(key: str, value: Any) -> None:
+    """Update a setting value in memory and persist to project config.
+
+    This is the public API for persisting setting changes — used by
+    Store's onChange callback and PermissionManager instead of calling
+    _save_json directly.
+    """
+    # Update in-memory settings
+    _set_nested(_settings, key, value)
+    # Persist to project config file
+    _persist_to_project(key, value)
+
+
 def get_all_settings() -> dict[str, Any]:
     """Return a snapshot of all settings."""
     return dict(_settings)
@@ -86,6 +102,29 @@ def get_all_settings() -> dict[str, Any]:
 def show_config() -> None:
     """Print current configuration."""
     print(json.dumps(_settings, indent=2, ensure_ascii=False))
+
+
+def is_persistable_key(key: str) -> bool:
+    """Check if a key should be persisted when changed via Store."""
+    return key in _PERSISTABLE_KEYS
+
+
+def _set_nested(data: dict[str, Any], key: str, value: Any) -> None:
+    """Set a value in a nested dict using dot-separated key."""
+    parts = key.split(".")
+    for part in parts[:-1]:
+        if part not in data or not isinstance(data[part], dict):
+            data[part] = {}
+        data = data[part]
+    data[parts[-1]] = value
+
+
+def _persist_to_project(key: str, value: Any) -> None:
+    """Persist a single key-value pair to the project .settings.json."""
+    project_path = Path.cwd() / ".ggbond" / ".settings.json"
+    data = _load_json(project_path)
+    _set_nested(data, key, value)
+    _save_json(project_path, data)
 
 
 def _deep_merge(base: dict, override: dict) -> None:

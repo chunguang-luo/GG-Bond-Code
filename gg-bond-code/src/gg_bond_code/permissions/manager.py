@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import fnmatch
 from enum import Enum
-from pathlib import Path
 from typing import Any
 
-from ..config.settings import get_setting, _load_json, _save_json
+from ..config.settings import get_setting, update_setting
 
 
 class PermissionDecision(Enum):
@@ -16,16 +15,12 @@ class PermissionDecision(Enum):
     ASK = "ask"
 
 
-# Project-level settings path for persisting permissions
-_PROJECT_SETTINGS_PATH = Path.cwd() / ".ggbond" / ".settings.json"
-
-
 class PermissionManager:
     """Manage tool execution permissions based on allow/deny lists."""
 
     def __init__(self) -> None:
-        self._allowed: list[str] = get_setting("permissions.allow", [])
-        self._denied: list[str] = get_setting("permissions.deny", [])
+        self._allowed: list[str] = list(get_setting("permissions.allow", []))
+        self._denied: list[str] = list(get_setting("permissions.deny", []))
         # Runtime session grants (user approved during this session)
         self._session_allowed: set[str] = set()
 
@@ -71,13 +66,12 @@ class PermissionManager:
             self._session_allowed.add(key)
 
     def _persist_allow(self, pattern: str) -> None:
-        """Persist an allow pattern to project .settings.json."""
-        data = _load_json(_PROJECT_SETTINGS_PATH)
-        allow_list: list[str] = data.get("permissions", {}).get("allow", [])
+        """Persist an allow pattern to project .settings.json via public API."""
+        # Read current allow list from settings
+        allow_list = list(get_setting("permissions.allow", []))
         if pattern not in allow_list:
             allow_list.append(pattern)
-            data.setdefault("permissions", {})["allow"] = allow_list
-            _save_json(_PROJECT_SETTINGS_PATH, data)
+            update_setting("permissions.allow", allow_list)
             # Keep in-memory list in sync
             self._allowed.append(pattern)
 
