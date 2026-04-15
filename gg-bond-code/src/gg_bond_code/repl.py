@@ -172,7 +172,7 @@ class REPL:
                         f"\n  ⚙ {event.tool_name}...",
                         style="dim cyan",
                     )
-                    output_line_count += 3  # empty line from \n + tool line + print newline
+                    output_line_count += 1  # tool line (print adds newline, \n just moves cursor)
 
                 elif event.type == "tool_use":
                     seen_tool = True
