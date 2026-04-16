@@ -6,6 +6,7 @@ import asyncio
 import time
 
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 
@@ -39,7 +40,7 @@ class REPL:
 
     @property
     def show_tool_details(self) -> bool:
-        return Store().get("ui.show_tool_details", False)
+        return Store().get("ui.show_tool_details", True)
 
     @show_tool_details.setter
     def show_tool_details(self, value: bool) -> None:
@@ -119,132 +120,93 @@ class REPL:
     async def _run_query(self, user_input: str) -> None:
         """Run a query and display results.
 
-        Strategy: stream raw text via print for instant feedback,
-        then re-render the full response as Markdown once complete.
+        Strategy: Use Live to render Markdown output in real-time,
+        accumulating content and updating the display efficiently.
         """
-        text_parts: list[str] = []
         thinking_parts: list[str] = []
         tool_start_times: dict[str, float] = {}  # tool_use_id → start time
         in_thinking = False  # track if we're inside a thinking block
-        output_line_count = 0  # track total output lines for cursor positioning
         gen = None  # track the async generator for cleanup
-        first_text = True  # track if this is the first text event
-        seen_tool = False  # track if we've seen any tool event
 
-        try:
-            gen = self.runner.run(user_input)
-            async for event in gen:
-                if event.type == "text":
-                    if in_thinking and self.show_thinking:
-                        self.console.print("\n< /Thinking >\n", style="dim", end="")
-                        output_line_count += 2  # newline + tag line
-                        in_thinking = False
-                    text_parts.append(event.content)
-                    # Stream raw text for instant feedback
-                    if seen_tool or first_text:
-                        # After tools or first text: start on a new line
-                        self.console.print()
-                        output_line_count += 1
-                        first_text = False
-                        seen_tool = False
-                    content_lines = event.content.split("\n")
-                    output_line_count += len(content_lines) - 1
-                    self.console.print(event.content, end="", highlight=False)
-                    self.console.file.flush()
+        # Build the content to display in Live
+        text_output: list[str] = []
 
-                elif event.type == "thinking":
-                    thinking_parts.append(event.content)
-                    if self.show_thinking:
-                        if not in_thinking:
-                            self.console.print("< Thinking > ", style="dim", end="")
-                            output_line_count += 1  # tag line
-                            in_thinking = True
-                        content_lines = event.content.split("\n")
-                        output_line_count += len(content_lines) - 1
-                        self.console.print(event.content, end="", style="dim italic")
-                        self.console.file.flush()
+        # Create Live with default overflow handling to avoid duplication
+        # transient=False keeps content after Live exits
+        with Live(Markdown(""), console=self.console, refresh_per_second=4) as live:
+            try:
+                gen = self.runner.run(user_input)
+                async for event in gen:
+                    if event.type == "text":
+                        if in_thinking and self.show_thinking:
+                            text_output.append("```\n")
+                            in_thinking = False
+                        text_output.append(event.content)
 
-                elif event.type == "tool_start":
-                    seen_tool = True
-                    if event.tool_use_id:
-                        tool_start_times[event.tool_use_id] = time.monotonic()
-                    self.console.print(
-                        f"\n  ⚙ {event.tool_name}...",
-                        style="dim cyan",
-                    )
-                    output_line_count += 1  # tool line (print adds newline, \n just moves cursor)
+                    elif event.type == "thinking":
+                        thinking_parts.append(event.content)
+                        if self.show_thinking:
+                            if not in_thinking:
+                                text_output.append("\n\n---\n**🤔 Thinking**\n```text\n")
+                                in_thinking = True
+                            text_output.append(event.content)
 
-                elif event.type == "tool_use":
-                    seen_tool = True
-                    if event.tool_use_id and event.tool_use_id not in tool_start_times:
-                        tool_start_times[event.tool_use_id] = time.monotonic()
-                    self.console.print()
-                    output_line_count += 1
-                    if event.tool_purpose:
-                        self.console.print(f"  {event.tool_purpose}", style="dim")
-                        output_line_count += 1
-                    self.console.print(
-                        f"  ⚙ {event.tool_name}({self._format_params(event.tool_input)})",
-                        style="dim cyan",
-                    )
-                    output_line_count += 1
+                    elif event.type == "tool_start":
+                        if event.tool_use_id:
+                            tool_start_times[event.tool_use_id] = time.monotonic()
 
-                elif event.type == "tool_result":
-                    seen_tool = True
-                    elapsed = ""
-                    if event.tool_use_id and event.tool_use_id in tool_start_times:
-                        t0 = tool_start_times.pop(event.tool_use_id)
-                        elapsed = f" ({time.monotonic() - t0:.1f}s)"
+                    elif event.type == "tool_use":
+                        if event.tool_use_id and event.tool_use_id not in tool_start_times:
+                            tool_start_times[event.tool_use_id] = time.monotonic()
+                        if event.tool_purpose:
+                            text_output.append(f"\n\n{event.tool_purpose}")
+                        params = self._format_params(event.tool_input)
+                        text_output.append(f"\n\n⚙️ `{event.tool_name}` ({params})")
 
-                    if event.tool_error:
-                        self.console.print(
-                            f"  ✗ {event.tool_name}{elapsed}",
-                            style="red",
-                        )
-                        output_line_count += 1
-                        error_lines = event.tool_result.split("\n")
-                        self.console.print(f"    {event.tool_result}", style="dim red")
-                        output_line_count += len(error_lines)
-                    else:
-                        result = event.tool_result
-                        if len(result) > 500:
-                            result = result[:500] + "..."
-                        self.console.print(f"  ✓ {event.tool_name}{elapsed}", style="green")
-                        output_line_count += 1
-                        if self.show_tool_details and result.strip():
-                            result_lines = result.split("\n")
-                            self.console.print(f"    {result}", style="dim")
-                            output_line_count += len(result_lines)
+                    elif event.type == "tool_result":
+                        elapsed = ""
+                        if event.tool_use_id and event.tool_use_id in tool_start_times:
+                            t0 = tool_start_times.pop(event.tool_use_id)
+                            elapsed_ms = (time.monotonic() - t0) * 1000
+                            elapsed = f" ({elapsed_ms:.0f}ms)"
 
-                elif event.type == "error":
-                    seen_tool = True
-                    self.console.print(Panel(event.content, title="Error", border_style="red"))
-                    # Estimate Panel lines (title + content + border)
-                    # This is approximate; Panel rendering is complex
-                    error_lines = event.content.count("\n") + 4  # border, title, content, border
-                    output_line_count += error_lines
+                        if event.tool_error:
+                            text_output.append(f"\n\n❌ `{event.tool_name}`{elapsed}\n\n")
+                            if self.show_tool_details:
+                                text_output.append(f"\n\n📄 结果内容 :\n\n```python\n{event.tool_result}\n```\n\n")
+                        else:
+                            result = event.tool_result
+                            if len(result) > 500:
+                                result = result[:500] + "..."
+                            if self.show_tool_details and result.strip():
+                                text_output.append(f"\n\n✅ `{event.tool_name}`{elapsed}\n\n")
+                                text_output.append(f"\n\n📄 结果内容 :\n\n```python\n{result}\n```\n\n")
+                            else:
+                                text_output.append(f"\n\n✅ `{event.tool_name}`{elapsed}\n\n")
 
-        except asyncio.CancelledError:
-            if gen is not None:
-                await gen.aclose()
-            self.console.print("\n[query stopped]", style="yellow")
-            return
+                    elif event.type == "error":
+                        text_output.append(f"\n\n**Error:** {event.content}")
 
-        # Close thinking block if still open
-        if in_thinking and self.show_thinking:
-            self.console.print("\n< /Thinking >\n", style="dim")
-            output_line_count += 2  # newline + tag line
+                    # Update Live display with current accumulated content
+                    # Let Live handle refresh timing automatically
+                    full_text = "".join(text_output)
+                    if full_text.strip():
+                        live.update(Markdown(full_text))
 
-        # Re-render the full text response as formatted Markdown
-        full_text = "".join(text_parts).strip()
-        if full_text:
-            # Move cursor up to overwrite all output
-            if output_line_count > 0:
-                self.console.file.write(f"\x1b[{output_line_count}A")  # cursor up
-            self.console.file.write("\x1b[J")  # clear from cursor down
-            self.console.file.flush()
-            self.console.print(Markdown(full_text))
-            self.console.print()
+            except asyncio.CancelledError:
+                if gen is not None:
+                    await gen.aclose()
+                self.console.print("\n[query stopped]", style="yellow")
+                return
+
+            # Close thinking block if still open
+            if in_thinking and self.show_thinking:
+                text_output.append("```\n")
+
+            # Final render with all content as Markdown
+            full_text = "".join(text_output).strip()
+            if full_text:
+                live.update(Markdown(full_text))
 
     def _handle_command(self, command: str) -> bool:
         """Handle slash commands. Returns True if should continue REPL."""
@@ -266,7 +228,7 @@ class REPL:
             state = "ON" if self.show_thinking else "OFF"
             self.console.print(f"Thinking display: [green]{state}[/green]")
             return False
-        elif cmd == "/show-tool-details":
+        elif cmd == "/verbose":
             self.show_tool_details = not self.show_tool_details
             state = "ON" if self.show_tool_details else "OFF"
             self.console.print(f"Tool details: [green]{state}[/green]")
@@ -311,7 +273,7 @@ class REPL:
                 "/clear    - Clear conversation\n"
                 "/compact  - Compact conversation history\n"
                 "/thinking - Toggle thinking display\n"
-                "/show-tool-details - Toggle tool result details\n"
+                "/verbose  - Toggle tool result details\n"
                 "/model    - Show current model\n"
                 "/exit     - Exit the REPL",
                 title="Commands",
