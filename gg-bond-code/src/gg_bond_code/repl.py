@@ -133,7 +133,7 @@ class REPL:
 
         # Create Live with default overflow handling to avoid duplication
         # transient=False keeps content after Live exits
-        with Live(Markdown(""), console=self.console, refresh_per_second=4) as live:
+        with Live(Markdown(""), console=self.console, refresh_per_second=4,vertical_overflow="visible") as live:
             try:
                 gen = self.runner.run(user_input)
                 async for event in gen:
