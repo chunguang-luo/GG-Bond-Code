@@ -30,6 +30,7 @@ class REPL:
         self.running = True
         self._last_interrupt_time: float = 0.0  # for double-Ctrl+C exit
         self._current_task: asyncio.Task | None = None  # track running query task
+        self._live: Live | None = None  # reference to current Live instance for permission prompts
 
     # ── UI preference accessors (backed by Store) ─────────────────────
 
@@ -105,8 +106,20 @@ class REPL:
             return None
 
     async def _ask_permission(self, tool_name: str, params: dict) -> PermissionDecision:
-        """Async permission callback — wraps sync ask_user via to_thread."""
-        return await asyncio.to_thread(self.runner.permissions.ask_user, tool_name, params)
+        """Async permission callback — pauses Live display before asking."""
+        # Stop Live display to allow user input
+        if self._live is not None:
+            self._live.stop()
+
+        try:
+            # Get user permission
+            decision = await asyncio.to_thread(self.runner.permissions.ask_user, tool_name, params)
+        finally:
+            # Resume Live display after getting user input
+            if self._live is not None:
+                self._live.start()
+
+        return decision
 
     def _handle_interrupt(self) -> None:
         """Handle Ctrl+C: first press cancels current query, second press exits REPL."""
@@ -139,71 +152,85 @@ class REPL:
 
         # Create Live with default overflow handling to avoid duplication
         # transient=False keeps content after Live exits
-        with Live(Markdown(""), console=self.console, refresh_per_second=4,vertical_overflow="visible") as live:
-            try:
-                gen = self.runner.run(user_input)
-                async for event in gen:
-                    if event.type == "text":
-                        if in_thinking and self.show_thinking:
-                            text_output.append("```\n")
-                            in_thinking = False
+        try:
+            self._live = Live(Markdown(""), console=self.console, refresh_per_second=4, vertical_overflow="visible")
+            self._live.start()
+
+            gen = self.runner.run(user_input)
+            async for event in gen:
+                if event.type == "text":
+                    if in_thinking and self.show_thinking:
+                        text_output.append("```\n")
+                        in_thinking = False
+                    text_output.append(event.content)
+
+                elif event.type == "thinking":
+                    thinking_parts.append(event.content)
+                    if self.show_thinking:
+                        if not in_thinking:
+                            text_output.append("\n\n---\n**🤔 Thinking**\n```text\n")
+                            in_thinking = True
                         text_output.append(event.content)
 
-                    elif event.type == "thinking":
-                        thinking_parts.append(event.content)
-                        if self.show_thinking:
-                            if not in_thinking:
-                                text_output.append("\n\n---\n**🤔 Thinking**\n```text\n")
-                                in_thinking = True
-                            text_output.append(event.content)
+                elif event.type == "tool_start":
+                    # Stop Live display before permission check and tool execution
+                    if self._live is not None:
+                        self._live.stop()
 
-                    elif event.type == "tool_start":
-                        if event.tool_use_id:
-                            tool_start_times[event.tool_use_id] = time.monotonic()
+                    if event.tool_use_id:
+                        tool_start_times[event.tool_use_id] = time.monotonic()
 
-                    elif event.type == "tool_use":
-                        if event.tool_use_id and event.tool_use_id not in tool_start_times:
-                            tool_start_times[event.tool_use_id] = time.monotonic()
-                        if event.tool_purpose:
-                            text_output.append(f"\n\n{event.tool_purpose}")
-                        params = self._format_params(event.tool_input)
-                        text_output.append(f"\n\n⚙️ `{event.tool_name}` ({params})")
+                elif event.type == "tool_use":
+                    if event.tool_use_id and event.tool_use_id not in tool_start_times:
+                        tool_start_times[event.tool_use_id] = time.monotonic()
+                    if event.tool_purpose:
+                        text_output.append(f"\n\n{event.tool_purpose}")
+                    params = self._format_params(event.tool_input)
+                    text_output.append(f"\n\n⚙️ `{event.tool_name}` ({params})")
 
-                    elif event.type == "tool_result":
-                        elapsed = ""
-                        if event.tool_use_id and event.tool_use_id in tool_start_times:
-                            t0 = tool_start_times.pop(event.tool_use_id)
-                            elapsed_ms = (time.monotonic() - t0) * 1000
-                            elapsed = f" ({elapsed_ms:.0f}ms)"
+                    # Resume Live display after permission is handled
+                    if self._live is not None:
+                        self._live.start()
 
-                        if event.tool_error:
-                            text_output.append(f"\n\n❌ `{event.tool_name}`{elapsed}\n\n")
-                            if self.show_tool_details:
-                                text_output.append(f"\n\n📄 结果内容 :\n\n```python\n{event.tool_result}\n```\n\n")
+                elif event.type == "tool_result":
+                    elapsed = ""
+                    if event.tool_use_id and event.tool_use_id in tool_start_times:
+                        t0 = tool_start_times.pop(event.tool_use_id)
+                        elapsed_ms = (time.monotonic() - t0) * 1000
+                        elapsed = f" ({elapsed_ms:.0f}ms)"
+
+                    if event.tool_error:
+                        text_output.append(f"\n\n❌ `{event.tool_name}`{elapsed}\n\n")
+                        if self.show_tool_details:
+                            text_output.append(f"\n\n📄 结果内容 :\n\n```python\n{event.tool_result}\n```\n\n")
+                    else:
+                        result = event.tool_result
+                        if len(result) > 500:
+                            result = result[:500] + "..."
+                        if self.show_tool_details and result.strip():
+                            text_output.append(f"\n\n✅ `{event.tool_name}`{elapsed}\n\n")
+                            text_output.append(f"\n\n📄 结果内容 :\n\n```python\n{result}\n```\n\n")
                         else:
-                            result = event.tool_result
-                            if len(result) > 500:
-                                result = result[:500] + "..."
-                            if self.show_tool_details and result.strip():
-                                text_output.append(f"\n\n✅ `{event.tool_name}`{elapsed}\n\n")
-                                text_output.append(f"\n\n📄 结果内容 :\n\n```python\n{result}\n```\n\n")
-                            else:
-                                text_output.append(f"\n\n✅ `{event.tool_name}`{elapsed}\n\n")
+                            text_output.append(f"\n\n✅ `{event.tool_name}`{elapsed}\n\n")
 
-                    elif event.type == "error":
-                        text_output.append(f"\n\n**Error:** {event.content}")
+                elif event.type == "error":
+                    text_output.append(f"\n\n**Error:** {event.content}")
 
-                    # Update Live display with current accumulated content
-                    # Let Live handle refresh timing automatically
-                    full_text = "".join(text_output)
-                    if full_text.strip():
-                        live.update(Markdown(full_text))
+                # Update Live display with current accumulated content
+                # Let Live handle refresh timing automatically
+                full_text = "".join(text_output)
+                if full_text.strip() and self._live is not None:
+                    self._live.update(Markdown(full_text))
 
-            except asyncio.CancelledError:
-                if gen is not None:
-                    await gen.aclose()
-                self.console.print("\n[query stopped]", style="yellow")
-                return
+        except asyncio.CancelledError:
+            if gen is not None:
+                await gen.aclose()
+            self.console.print("\n[query stopped]", style="yellow")
+            return
+        finally:
+            # Ensure Live is stopped and cleaned up
+            if self._live is not None:
+                self._live.stop()
 
             # Close thinking block if still open
             if in_thinking and self.show_thinking:
@@ -212,7 +239,7 @@ class REPL:
             # Final render with all content as Markdown
             full_text = "".join(text_output).strip()
             if full_text:
-                live.update(Markdown(full_text))
+                self.console.print(Markdown(full_text))
 
     def _handle_command(self, command: str) -> bool:
         """Handle slash commands. Returns True if should continue REPL."""
