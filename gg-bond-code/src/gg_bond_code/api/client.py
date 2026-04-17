@@ -57,6 +57,48 @@ def _model_family(model: str) -> str:
 get_model_family = _model_family
 
 
+# ── System prompt handling ────────────────────────────────────────────
+
+from ..prompts.system import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+
+
+def _split_system_prompt(
+    system: str | list[str]
+) -> tuple[list[str], list[str]]:
+    """Split system prompt into static and dynamic parts by boundary marker.
+
+    Args:
+        system: Either a string or list of prompt sections.
+
+    Returns:
+        Tuple of (static_sections, dynamic_sections). Static sections can use
+        global cache; dynamic sections vary per session.
+    """
+    # Convert string to list
+    if isinstance(system, str):
+        system_list = [system]
+    else:
+        system_list = list(system)
+
+    # Find boundary marker
+    boundary_idx = -1
+    for i, section in enumerate(system_list):
+        if section == SYSTEM_PROMPT_DYNAMIC_BOUNDARY:
+            boundary_idx = i
+            break
+
+    if boundary_idx == -1:
+        # No boundary, all static
+        return system_list, []
+
+    # Static: before boundary, exclude marker
+    static = [s for s in system_list[:boundary_idx] if s]
+    # Dynamic: after boundary, exclude marker
+    dynamic = [s for s in system_list[boundary_idx+1:] if s]
+
+    return static, dynamic
+
+
 # ── Retry helper ─────────────────────────────────────────────────────
 
 def _is_retryable(exc: Exception) -> bool:
@@ -316,11 +358,20 @@ def _sanitize_surrogates(obj: Any) -> Any:
 async def stream_message(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
-    system: str,
+    system: str | list[str],
     model: str,
     max_tokens: int | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Stream a message — auto-selects backend based on model name."""
+    """Stream a message — auto-selects backend based on model name.
+
+    Args:
+        messages: List of message dictionaries with 'role' and 'content'.
+        tools: List of tool definitions in Anthropic format.
+        system: System prompt as string or list of sections. List format
+            supports static/dynamic boundary separation for future caching.
+        model: Model name (e.g., 'deepseek-chat', 'claude-sonnet-4-20250514').
+        max_tokens: Maximum output tokens. Defaults to setting or 8192.
+    """
     from ..config.settings import get_setting
 
     if max_tokens is None:
@@ -330,13 +381,21 @@ async def stream_message(
     # Clamp to model family's max output limit
     max_tokens = min(max_tokens, _MAX_OUTPUT_TOKENS[family])
 
+    # Split system prompt into static/dynamic parts
+    static_blocks, dynamic_blocks = _split_system_prompt(system)
+
+    # Combine for API call
+    # TODO: When Anthropic API supports prompt cache with list[str],
+    # pass static and dynamic separately with cache_scope settings
+    combined_system = "\n\n".join(static_blocks + dynamic_blocks)
+
     # Sanitize surrogates in messages before sending to API
     messages = _sanitize_surrogates(messages)
-    system = _sanitize_surrogates(system)
+    combined_system = _sanitize_surrogates(combined_system)
 
     if family == "anthropic":
-        async for evt in _stream_anthropic(messages, tools, system, model, max_tokens):
+        async for evt in _stream_anthropic(messages, tools, combined_system, model, max_tokens):
             yield evt
     else:
-        async for evt in _stream_openai(messages, tools, system, model, max_tokens):
+        async for evt in _stream_openai(messages, tools, combined_system, model, max_tokens):
             yield evt

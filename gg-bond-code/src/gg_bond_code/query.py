@@ -13,6 +13,8 @@ from .state.context import ToolUseContext, create_store_context
 from .state.store import Store
 from .tools.base import ToolRegistry, ToolResult, create_default_registry
 from .permissions.manager import PermissionManager, PermissionDecision
+from .context.system import get_system_context, format_system_context, clear_system_context_cache
+from .context.user import get_user_context, prepend_user_context
 
 
 @dataclass
@@ -73,8 +75,24 @@ class QueryRunner:
     async def run(self, user_message: str) -> AsyncIterator[QueryEvent]:
         """Run a single user message through the conversation loop."""
         ctx = self._context
+
+        # Get contexts (computed on demand with caching)
+        system_ctx = get_system_context(ctx.get_state("cwd"))
+        user_ctx = get_user_context(ctx.get_state("cwd"))
+
+        # Build full system prompt
+        static_sections = build_system_prompt(cwd=ctx.get_state("cwd"))
+        dynamic_sections = [format_system_context(system_ctx)] if system_ctx else []
+
+        full_system_prompt = [
+            *static_sections,
+            *dynamic_sections,
+        ]
+
+        # Prepare messages with user context
         messages: list[dict[str, Any]] = ctx.get_state("messages") or []
         messages.append({"role": "user", "content": user_message})
+        messages = prepend_user_context(messages, user_ctx)
 
         tools = ctx.registry.to_api_format(self.family)
 
@@ -88,7 +106,7 @@ class QueryRunner:
                     async for evt in stream_message(
                         messages=messages,
                         tools=tools,
-                        system=self.system_prompt,
+                        system=full_system_prompt,
                         model=self.model,
                     ):
                         if evt["type"] == "text_delta":

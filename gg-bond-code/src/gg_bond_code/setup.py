@@ -42,7 +42,7 @@ def setup(cwd: str, model: str | None = None) -> None:
     store.set("messages", [])
 
     # 5. Initialize UI preferences in Store (optimization 3)
-    store.set("ui.show_thinking", True)
+    store.set("ui.show_thinking", False)
     store.set("ui.show_tool_details", False)
 
 

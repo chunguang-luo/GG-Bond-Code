@@ -10,10 +10,13 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 
+from .prompts.prompt_section import clear_section_cache
+from .context.system import clear_system_context_cache
 from .query import QueryRunner, QueryEvent
 from .state.store import Store
 from .state.context import create_store_context
 from .permissions.manager import PermissionDecision
+from .prefetch import start_deferred_prefetches
 
 
 class REPL:
@@ -49,6 +52,9 @@ class REPL:
     async def run(self) -> None:
         """Main REPL loop."""
         self._print_welcome()
+
+        # Start prefetch in background
+        await start_deferred_prefetches()
 
         while self.running:
             try:
@@ -217,6 +223,8 @@ class REPL:
             self.running = False
             return False
         elif cmd == "/clear":
+            clear_section_cache()  # Clear prompt section cache
+            clear_system_context_cache()  # Clear system context cache
             store.set("messages", [])
             self._context = create_store_context()
             self.runner = QueryRunner(model=self.model, permission_callback=self._ask_permission, context=self._context)
@@ -237,6 +245,8 @@ class REPL:
             self._print_help()
             return False
         elif cmd == "/compact":
+            clear_section_cache()  # Clear prompt section cache
+            clear_system_context_cache()  # Clear system context cache
             self.console.print("[dim]Compacting conversation...[/dim]")
             messages = store.get("messages", [])
             if messages:
@@ -262,7 +272,6 @@ class REPL:
             )
         )
         self.console.print("Type /help for commands, /exit to quit.\n")
-
     def _print_goodbye(self) -> None:
         self.console.print("\nGoodbye!", style="blue")
 

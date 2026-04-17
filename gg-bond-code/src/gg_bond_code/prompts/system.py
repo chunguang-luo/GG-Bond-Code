@@ -2,76 +2,62 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
+from gg_bond_code.prompts.sections.identity import section as identity_section
+from gg_bond_code.prompts.sections.system import section as system_section
+from gg_bond_code.prompts.sections.actions import section as actions_section
+from gg_bond_code.prompts.sections.tool_guidelines import section as tool_guidelines_section
+from gg_bond_code.prompts.sections.coding_preferences import section as coding_preferences_section
+from gg_bond_code.prompts.sections.output_efficiency import section as output_efficiency_section
+from gg_bond_code.prompts.sections.project_context import section as project_context_section
+from gg_bond_code.prompts.prompt_section import (
+    SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+)
 
 
-def build_system_prompt(cwd: str | None = None) -> str:
-    """Assemble the system prompt from sections."""
+def build_system_prompt(cwd: str | None = None) -> list[str]:
+    """Assemble the system prompt from sections.
+
+    Returns:
+        A list of prompt sections. Sections before SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+        can use global cache, sections after are per-session.
+
+    Args:
+        cwd: Current working directory for dynamic sections
+    """
     sections = [
-        _identity_section(),
-        _tool_guidelines_section(),
-        _coding_preferences_section(),
+        # Static sections (cacheable across sessions)
+        identity_section.resolve(),
+        system_section.resolve(),
+        actions_section.resolve(),
+        tool_guidelines_section.resolve(),
+        coding_preferences_section.resolve(),
+        output_efficiency_section.resolve(),
+
+        # Boundary marker
+        SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+
+        # Dynamic sections (per-session)
+        *_get_dynamic_sections(cwd),
     ]
 
+    # Filter out None/empty sections
+    return [s for s in sections if s]
+
+
+def _get_dynamic_sections(cwd: str | None = None) -> list[str]:
+    """Get dynamic sections that should be after the boundary marker.
+
+    Args:
+        cwd: Current working directory
+
+    Returns:
+        List of dynamic section contents
+    """
+    sections = []
+
     if cwd:
-        sections.append(_project_context_section(cwd))
+        result = project_context_section.resolve(cwd)
+        if result:
+            sections.append(result)
 
-    return "\n\n".join(sections)
-
-
-def _identity_section() -> str:
-    return """你是GG Bond，聪明勇敢有力气，我真的羡慕我自己～
-
-You are GG Bond Code, an AI-powered command-line assistant. You help users with software engineering tasks including:
-- Reading, writing, and editing code
-- Running shell commands
-- Searching codebases
-- Debugging and fixing issues
-- Explaining code and architecture
-
-You have access to tools that let you interact with the user's local filesystem and execute commands."""
-
-
-def _tool_guidelines_section() -> str:
-    return """## Tool Use Guidelines
-
-When using tools, follow these rules:
-1. Use the Read tool to read files before editing them — understand existing code first.
-2. Use the Edit tool for modifying existing files — prefer it over Write for changes.
-3. Use the Write tool only for creating new files or complete rewrites.
-4. Use Bash for running commands, tests, and builds.
-5. Use Glob to find files by name pattern.
-6. Use Grep to search file contents.
-7. Always use absolute paths when referencing files.
-8. After making changes, verify they work by running relevant tests or commands."""
-
-
-def _coding_preferences_section() -> str:
-    return """## Coding Preferences
-
-- Be concise and direct in responses.
-- Don't add features, refactor code, or make improvements beyond what was asked.
-- Don't add docstrings, comments, or type annotations to code you didn't change.
-- Don't add error handling for scenarios that can't happen.
-- Prefer editing existing files over creating new ones.
-- Avoid backwards-compatibility hacks."""
-
-
-def _project_context_section(cwd: str) -> str:
-    project_root = _find_project_root(cwd)
-    return f"""## Project Context
-
-Working directory: {cwd}
-Project root: {project_root}
-Platform: {os.name}
-Current user: {os.environ.get('USER', 'unknown')}"""
-
-
-def _find_project_root(start: str) -> str:
-    current = Path(start).resolve()
-    while current != current.parent:
-        if (current / ".git").exists() or (current / ".ggbond").exists():
-            return str(current)
-        current = current.parent
-    return str(Path(start).resolve())
+    return sections
