@@ -283,8 +283,38 @@ class REPL:
             self.console.print(f"Current model: {store.get('model', 'unknown')}")
             return False
         else:
-            self.console.print(f"Unknown command: {command}", style="yellow")
+            self.console.print(f"Unknown command: {cmd}", style="yellow")
+            # Suggest similar commands
+            similar = self._find_similar_command(cmd)
+            if similar:
+                self.console.print(f"Did you mean: [green]{similar}[/green]?")
             return False
+
+    def _find_similar_command(self, cmd: str) -> str | None:
+        """Find similar command suggestion using simple string similarity."""
+        valid_commands = ["/help", "/clear", "/compact", "/thinking", "/verbose", "/model", "/exit", "/quit", "/q"]
+        best_match = None
+        best_score = 0
+
+        for valid_cmd in valid_commands:
+            # Simple similarity: count matching characters at start
+            score = 0
+            min_len = min(len(cmd), len(valid_cmd))
+            for i in range(min_len):
+                if cmd[i] == valid_cmd[i]:
+                    score += 1
+                else:
+                    break
+
+            # Bonus for same length
+            if len(cmd) == len(valid_cmd):
+                score += 1
+
+            if score > best_score and score >= 2:  # At least 2 matching chars
+                best_score = score
+                best_match = valid_cmd
+
+        return best_match
 
     def _print_welcome(self) -> None:
         store = Store()
