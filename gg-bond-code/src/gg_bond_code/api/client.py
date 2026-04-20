@@ -101,37 +101,102 @@ def _split_system_prompt(
 
 # ── Retry helper ─────────────────────────────────────────────────────
 
-def _is_retryable(exc: Exception) -> bool:
-    """Check if an exception is retryable (429 or 5xx)."""
-    status_code = getattr(exc, "status_code", None)
-    if status_code is None:
-        status_code = getattr(getattr(exc, "response", None), "status_code", None)
-    if status_code is not None:
-        return status_code == 429 or status_code >= 500
-    return False
+from .retry import (
+    RetryPolicy,
+    QueryType,
+    RetryManager,
+    is_retryable_error as _is_retryable,
+    calculate_retry_delay,
+)
 
 
-async def _retry_stream(gen_factory, *args, **kwargs) -> AsyncIterator[dict[str, Any]]:
+async def _retry_stream(
+    gen_factory: Callable[..., AsyncIterator[dict[str, Any]]],
+    *args: **kwargs,
+) -> AsyncIterator[dict[str, Any]]:
     """Wrap an async generator factory with exponential-backoff retry.
 
-    gen_factory returns an async generator (not a coroutine), so we iterate
-    it directly with ``async for`` — no ``await``.
+    Note: gen_factory must return an async generator (not a coroutine).
+    We iterate it with async for, which respects the async protocol.
+
+    Args:
+        gen_factory: Async generator factory (returns AsyncIterator)
+        *args: Positional arguments for gen_factory
+        **kwargs: Keyword arguments for gen_factory
+
+    Yields:
+        Stream events from the generator factory
     """
+    from .retry import logger, RetryPolicy
+
     last_exc: Exception | None = None
-    for attempt in range(_MAX_RETRIES + 1):
+
+    for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            async for evt in gen_factory(*args, **kwargs):
+            # Create generator
+            gen = gen_factory(*args, **kwargs)
+
+            # Iterate and yield events
+            async for evt in gen:
                 yield evt
+
+            # Success: break out of retry loop
             return
+
         except Exception as exc:
-            if not _is_retryable(exc) or attempt >= _MAX_RETRIES:
-                raise
             last_exc = exc
-            delay = _RETRY_DELAYS[attempt]
-            logger.warning("API error (attempt %d/%d), retrying in %.1fs: %s",
-                           attempt + 1, _MAX_RETRIES, delay, exc)
-            await asyncio.sleep(delay)
-    raise last_exc  # type: ignore[misc]
+
+            # Check if error is retryable
+            if not _is_retryable(exc):
+                logger.warning(f"Non-retryable error: {type(exc).__name__}: {exc}")
+                raise
+
+            # Last attempt, re-raise
+            if attempt >= _MAX_RETRIES:
+                raise
+
+            # Calculate retry delay with jitter
+            delay_ms = _calculate_retry_delay(attempt, RetryPolicy())
+
+            logger.warning(
+                f"API error (attempt {attempt}/{_MAX_RETRIES}), "
+                f"retrying in {delay_ms / 1000:.1f}s: {type(exc).__name__}: {exc}"
+            )
+
+            await asyncio.sleep(delay_ms / 1000)
+
+    # This should not be reached, but ensure we re-raise last exception
+    if last_exc is not None:
+        raise last_exc  # type: ignore[misc]
+
+
+def _calculate_retry_delay(attempt: int, policy: RetryPolicy) -> int:
+    """Calculate retry delay with exponential backoff and jitter.
+
+    Args:
+        attempt: Current retry attempt (1-indexed)
+        policy: Retry policy configuration
+
+    Returns:
+        Delay in milliseconds
+    """
+    import random
+
+    # Clamp attempt to multiplier list length
+    if attempt <= len(_RETRY_DELAYS):
+        multiplier = _RETRY_DELAYS[attempt - 1]
+    else:
+        # Cap at max multiplier for safety
+        multiplier = _RETRY_DELAYS[-1]
+
+    base_delay = policy.BASE_DELAY_MS * multiplier
+
+    # Add jitter to prevent thundering herd (25% of base delay)
+    jitter = base_delay * random.random() * 0.25
+
+    delay = min(base_delay + jitter, policy.MAX_DELAY_MS)
+
+    return delay
 
 
 # ── OpenAI-compatible client ────────────────────────────────────────
