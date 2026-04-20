@@ -274,7 +274,7 @@ class QueryRunner:
 
     async def _execute_tool(self, name: str, params: dict[str, Any]) -> ToolResult:
         """Execute a tool by name using the safe wrapper with retry protection."""
-        from .retry import with_retry, RetryPolicy, QueryType
+        from .api.retry import with_retry, RetryPolicy, QueryType
 
         tool = self._context.registry.get(name)
         if not tool:
@@ -283,12 +283,13 @@ class QueryRunner:
         # Wrap tool execution with retry protection
         # 3 attempts for transient errors (5xx, connection errors)
         return await with_retry(
-            operation=tool.execute_safe,
+            tool.execute_safe,
+            params,
             policy=RetryPolicy(
-                DELAY_MULTIPLIERS=[1.0, 2.0, 4.0],
-                RESPECT_RETRY_AFTER=True,
-                MAX_RETRIES=3,
+                delay_multipliers=[1, 2, 4],
+                respect_retry_after=True,
+                max_retries=10,
             ),
             query_type=QueryType.FOREGROUND,
             description=f"Execute tool: {name}",
-        )(params)
+        )

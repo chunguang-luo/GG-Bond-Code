@@ -13,30 +13,32 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from dataclasses import dataclass, field
 from typing import Awaitable, Callable, TypeVar
 from enum import Enum
 
 logger = logging.getLogger(__name__)
 
 
-class RetryPolicy(Enum):
+@dataclass
+class RetryPolicy:
     """Retry policy configuration."""
 
     # Number of retries before giving up
-    MAX_RETRIES: int = 3
+    max_retries: int = 10
 
     # Initial and maximum delay in milliseconds
-    BASE_DELAY_MS: int = 500
-    MAX_DELAY_MS: int = 32000  # 32 seconds
+    base_delay_ms: int = 500
+    max_delay_ms: int = 32000  # 32 seconds
 
     # Retry delay multipliers
-    DELAY_MULTIPLIERS: list[int] = [1, 2, 4]
+    delay_multipliers: list[int] = field(default_factory=lambda: [1, 2, 4])
 
     # Whether to respect Retry-After header
-    RESPECT_RETRY_AFTER: bool = True
+    respect_retry_after: bool = True
 
     # Whether retry is enabled
-    ENABLED: bool = True
+    enabled: bool = True
 
 
 class QueryType(Enum):
@@ -63,18 +65,18 @@ async def calculate_retry_delay(
     Returns:
         Delay in milliseconds
     """
-    if attempt <= len(policy.DELAY_MULTIPLIERS):
-        multiplier = policy.DELAY_MULTIPLIERS[attempt - 1]
+    if attempt <= len(policy.delay_multipliers):
+        multiplier = policy.delay_multipliers[attempt - 1]
     else:
         # Cap at max multiplier for safety
-        multiplier = policy.DELAY_MULTIPLIERS[-1]
+        multiplier = policy.delay_multipliers[-1]
 
-    base_delay = policy.BASE_DELAY_MS * (2 ** (attempt - 1))
+    base_delay = policy.base_delay_ms * (2 ** (attempt - 1))
 
     # Add jitter to prevent thundering herd (25% of base delay)
     jitter = base_delay * random.random() * 0.25
 
-    delay = min(base_delay + jitter, policy.MAX_DELAY_MS)
+    delay = min(base_delay + jitter, policy.max_delay_ms)
 
     logger.debug(
         f"Retry attempt {attempt}: "
@@ -119,6 +121,9 @@ def is_retryable_error(error: Exception, status_code: int | None = None) -> bool
         "httpx.RemoteProtocolError",
         "httpx.HTTPStatusError",
         "httpx.ReadTimeout",
+        # OpenAI API errors that should be retried
+        "APIConnectionError",
+        "APITimeoutError",
     }
 
     if error_name in retryable_errors:
@@ -142,95 +147,93 @@ def is_retryable_error(error: Exception, status_code: int | None = None) -> bool
     return False
 
 
-async def with_retry[
-    T](
+async def with_retry(
     operation: Callable[..., Awaitable[T]],
-    *,
+    *args: object,
     policy: RetryPolicy = RetryPolicy(),
     query_type: QueryType = QueryType.FOREGROUND,
     description: str = "",
-] -> Awaitable[T]:
-    """Retry decorator with configurable policy.
+    **kwargs: object,
+) -> T:
+    """Execute an async operation with retry logic.
 
     Args:
         operation: Async operation to execute with retry
+        *args: Positional arguments to pass to the operation
         policy: Retry policy configuration
         query_type: Type of query (determines retry behavior)
         description: Human-readable description for logging
+        **kwargs: Keyword arguments to pass to the operation
 
     Returns:
-        Decorator that wraps the operation with retry logic
+        Result of the operation
     """
+    last_exception: Exception | None = None
+    consecutive_5xx = 0
 
-    def decorator(
-        func: Callable[..., Awaitable[T]],
-    ) -> Callable[..., Awaitable[T]]:
-        """Inner decorator function."""
+    for attempt in range(1, policy.max_retries + 1):
+        try:
+            logger.info(
+                f"{description}: Attempt {attempt}/{policy.max_retries + 1} "
+                f"for query type: {query_type.value}"
+            )
 
-        @wraps(func)
-        async def wrapper(*args: **kwargs) -> T:
-            last_exception: None
-            consecutive_5xx = 0
+            result = await operation(*args, **kwargs)
 
-            for attempt in range(1, policy.MAX_RETRIES + 1):
-                try:
-                    logger.info(
-                        f"{description}: Attempt {attempt}/{policy.MAX_RETRIES + 1}"
-                        f"for query type: {query_type.value}"
-                    )
+            # Success - return result
+            return result
 
-                    result = await func(*args, **kwargs)
+        except Exception as e:
+            last_exception = e
 
-                    # Success - return result
-                    return result
-
-                except Exception as e:
-                    last_exception = e
-
-                    # Check if error is retryable
-                    if not is_retryable_error(e):
-                        logger.error(
-                            f"{description}: Non-retryable error ({type(e).__name__}): {e}. "
-                            f"Not retrying. Giving up after attempt {attempt}."
-                        )
-                        # Reraise to give up
-                        raise e
-
-                    # Log the error
-                    logger.warning(
-                        f"{description}: Error on attempt {attempt}: {type(e).__name__}: {e}"
-                    )
-
-                    # Handle 5xx errors specially
-                    if hasattr(e, "status_code"):
-                        if 400 <= e.status_code < 500:
-                            # Client error, don't retry
-                            logger.error(
-                                f"{description}: Client error {e.status_code}, not retrying"
-                            )
-                            raise e
-                        elif 500 <= e.status_code < 600:
-                            consecutive_5xx += 1
-                            if consecutive_5xx >= 2:
-                                # Too many 5xx errors, maybe server issue
-                                logger.error(
-                                    f"{description}: Too many 5xx errors ({consecutive_5xx}), stopping"
-                                )
-                                raise e
-                    else:
-                        # For other retryable errors, continue
-                        pass
-
-            # If we exhausted retries without success, raise last exception
-            if last_exception is not None:
+            # Check if error is retryable
+            if not is_retryable_error(e):
                 logger.error(
-                    f"{description}: Exhausted {policy.MAX_RETRIES} retries. Last error: {last_exception}"
+                    f"{description}: Non-retryable error ({type(e).__name__}): {e}. "
+                    f"Not retrying. Giving up after attempt {attempt}."
                 )
-                raise last_exception
+                # Reraise to give up
+                raise e
 
-        return wrapper
+            # Log the error
+            logger.warning(
+                f"{description}: Error on attempt {attempt}: {type(e).__name__}: {e}"
+            )
 
-    return decorator
+            # Handle 5xx errors specially
+            if hasattr(e, "status_code"):
+                if 400 <= e.status_code < 500:
+                    # Client error, don't retry
+                    logger.error(
+                        f"{description}: Client error {e.status_code}, not retrying"
+                    )
+                    raise e
+                elif 500 <= e.status_code < 600:
+                    consecutive_5xx += 1
+                    if consecutive_5xx >= 2:
+                        # Too many 5xx errors, maybe server issue
+                        logger.error(
+                            f"{description}: Too many 5xx errors ({consecutive_5xx}), stopping"
+                        )
+                        raise e
+            else:
+                # For other retryable errors, continue
+                pass
+
+            # Calculate delay for next retry (if not last attempt)
+            if attempt < policy.max_retries:
+                delay_ms = await calculate_retry_delay(attempt, policy)
+                await asyncio.sleep(delay_ms / 1000)
+
+    # If we exhausted retries without success, raise last exception
+    if last_exception is not None:
+        logger.error(
+            f"{description}: Exhausted {policy.max_retries} retries. Last error: {last_exception}"
+        )
+        raise last_exception
+
+    # This should never be reached, but satisfy type checker
+    raise RuntimeError("Unexpected state in retry logic")
 
 
 class RetryManager:
@@ -268,7 +271,7 @@ class RetryManager:
 
     def should_retry_after_delay(self, operation_name: str) -> bool:
         """Check if we should respect Retry-After header."""
-        return self._policy.RESPECT_RETRY_AFTER
+        return self._policy.respect_retry_after
 
     def reset_5xx_counter(self, operation_name: str) -> None:
         """Reset 5xx error counter (e.g., after successful request)."""
