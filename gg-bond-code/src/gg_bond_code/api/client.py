@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 import httpx
 
@@ -37,8 +37,7 @@ _MAX_OUTPUT_TOKENS: dict[str, int] = {
 
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 
-_MAX_RETRIES = 3
-_RETRY_DELAYS = [1.0, 2.0, 4.0]
+_MAX_RETRIES = 10
 
 
 def _model_family(model: str) -> str:
@@ -103,8 +102,6 @@ def _split_system_prompt(
 
 from .retry import (
     RetryPolicy,
-    QueryType,
-    RetryManager,
     is_retryable_error as _is_retryable,
     calculate_retry_delay,
 )
@@ -112,7 +109,8 @@ from .retry import (
 
 async def _retry_stream(
     gen_factory: Callable[..., AsyncIterator[dict[str, Any]]],
-    *args: **kwargs,
+    *args,
+    **kwargs,
 ) -> AsyncIterator[dict[str, Any]]:
     """Wrap an async generator factory with exponential-backoff retry.
 
@@ -128,6 +126,9 @@ async def _retry_stream(
         Stream events from the generator factory
     """
     from .retry import logger, RetryPolicy
+
+    # Create a simple retry policy for streaming
+    policy = RetryPolicy(max_retries=_MAX_RETRIES)
 
     last_exc: Exception | None = None
 
@@ -156,7 +157,7 @@ async def _retry_stream(
                 raise
 
             # Calculate retry delay with jitter
-            delay_ms = _calculate_retry_delay(attempt, RetryPolicy())
+            delay_ms = await calculate_retry_delay(attempt, policy)
 
             logger.warning(
                 f"API error (attempt {attempt}/{_MAX_RETRIES}), "
@@ -168,35 +169,6 @@ async def _retry_stream(
     # This should not be reached, but ensure we re-raise last exception
     if last_exc is not None:
         raise last_exc  # type: ignore[misc]
-
-
-def _calculate_retry_delay(attempt: int, policy: RetryPolicy) -> int:
-    """Calculate retry delay with exponential backoff and jitter.
-
-    Args:
-        attempt: Current retry attempt (1-indexed)
-        policy: Retry policy configuration
-
-    Returns:
-        Delay in milliseconds
-    """
-    import random
-
-    # Clamp attempt to multiplier list length
-    if attempt <= len(_RETRY_DELAYS):
-        multiplier = _RETRY_DELAYS[attempt - 1]
-    else:
-        # Cap at max multiplier for safety
-        multiplier = _RETRY_DELAYS[-1]
-
-    base_delay = policy.BASE_DELAY_MS * multiplier
-
-    # Add jitter to prevent thundering herd (25% of base delay)
-    jitter = base_delay * random.random() * 0.25
-
-    delay = min(base_delay + jitter, policy.MAX_DELAY_MS)
-
-    return delay
 
 
 # ── OpenAI-compatible client ────────────────────────────────────────
