@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from gg_bond_code.prompts.prompt_section import system_prompt_section
-
 
 def get_content() -> str:
     """Return the identity section content."""
@@ -18,5 +16,5 @@ You are GG Bond Code, an AI-powered command-line assistant. You help users with 
 You have access to tools that let you interact with the user's local filesystem and execute commands."""
 
 
-# Create the section object for caching
-section = system_prompt_section("identity", get_content)
+# Section function - returns content when called
+section = get_content

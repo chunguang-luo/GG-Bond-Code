@@ -249,7 +249,6 @@ class REPL:
             self.running = False
             return False
         elif cmd == "/clear":
-            # No-op: prompt section caching removed
             clear_system_context_cache()  # Clear system context cache
             store.set("messages", [])
             self._context = create_store_context()
@@ -271,7 +270,6 @@ class REPL:
             self._print_help()
             return False
         elif cmd == "/compact":
-            # No-op: prompt section caching removed
             clear_system_context_cache()  # Clear system context cache
             self.console.print("[dim]Compacting conversation...[/dim]")
             messages = store.get("messages", [])

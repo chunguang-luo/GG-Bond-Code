@@ -9,9 +9,9 @@ from gg_bond_code.prompts.sections.tool_guidelines import section as tool_guidel
 from gg_bond_code.prompts.sections.coding_preferences import section as coding_preferences_section
 from gg_bond_code.prompts.sections.output_efficiency import section as output_efficiency_section
 from gg_bond_code.prompts.sections.project_context import section as project_context_section
-from gg_bond_code.prompts.prompt_section import (
-    SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
-)
+
+# Boundary marker separating static and dynamic sections
+SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"
 
 
 def build_system_prompt(cwd: str | None = None) -> list[str]:
@@ -25,18 +25,18 @@ def build_system_prompt(cwd: str | None = None) -> list[str]:
         cwd: Current working directory for dynamic sections
     """
     sections = [
-        # Static sections (cacheable across sessions)
-        identity_section.resolve(),
-        system_section.resolve(),
-        actions_section.resolve(),
-        tool_guidelines_section.resolve(),
-        coding_preferences_section.resolve(),
-        output_efficiency_section.resolve(),
+        # Static sections (no parameters)
+        identity_section(),
+        system_section(),
+        actions_section(),
+        tool_guidelines_section(),
+        coding_preferences_section(),
+        output_efficiency_section(),
 
         # Boundary marker
         SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 
-        # Dynamic sections (per-session)
+        # Dynamic sections (require parameters)
         *_get_dynamic_sections(cwd),
     ]
 
@@ -56,7 +56,7 @@ def _get_dynamic_sections(cwd: str | None = None) -> list[str]:
     sections = []
 
     if cwd:
-        result = project_context_section.resolve(cwd)
+        result = project_context_section(cwd)
         if result:
             sections.append(result)
 

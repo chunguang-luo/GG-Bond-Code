@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from gg_bond_code.prompts.prompt_section import system_prompt_section
-
 
 def get_content() -> str:
     """Return to coding preferences section content."""
@@ -34,5 +32,5 @@ def get_content() -> str:
 - Do NOT create documentation files (*.md) or README files unless explicitly requested by the User."""
 
 
-# Create to section object for caching
-section = system_prompt_section("coding_preferences", get_content)
+# Section function - returns content when called
+section = get_content

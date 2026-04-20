@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from gg_bond_code.prompts.prompt_section import system_prompt_section
-
 
 def get_content() -> str:
-    """Return the system section content."""
+    """Return to system section content."""
     return """## System
 
-All text you output outside of tool use is displayed to the user in markdown format and will be rendered in a monospace font using the CommonMark specification.
+All text you output outside of tool use is displayed to user in markdown format and will be rendered in a monospace font using the CommonMark specification.
 
 Tools are executed in a user-selected permission mode. When you attempt to call a tool that is not automatically allowed by the user's permission mode, the user will be prompted so that they can approve or deny the action. If the user denies a tool call, do not re-attempt the exact same tool call. Instead, think about why the user may have denied the tool call and adjust your approach accordingly.
 
@@ -22,5 +20,5 @@ IMPORTANT: You must NEVER generate or guess URLs for the user unless you are con
 The system may automatically compress prior messages as it approaches context limits. This is handled transparently."""
 
 
-# Create the section object for caching
-section = system_prompt_section("system", get_content)
+# Section function - returns content when called
+section = get_content
