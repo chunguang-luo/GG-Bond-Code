@@ -71,8 +71,8 @@ def _split_system_prompt(
         system: Either a string or list of prompt sections.
 
     Returns:
-        Tuple of (static_sections, dynamic_sections). Static sections can use
-        global cache; dynamic sections vary per session.
+        Tuple of (static_sections, dynamic_sections). Static sections have no
+        parameters; dynamic sections require parameters like cwd.
     """
     # Convert string to list
     if isinstance(system, str):

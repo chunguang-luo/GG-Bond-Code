@@ -10,7 +10,6 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 
-from .prompts.prompt_section import clear_section_cache
 from .context.system import clear_system_context_cache
 from .query import QueryRunner, QueryEvent
 from .state.store import Store
@@ -250,7 +249,7 @@ class REPL:
             self.running = False
             return False
         elif cmd == "/clear":
-            clear_section_cache()  # Clear prompt section cache
+            # No-op: prompt section caching removed
             clear_system_context_cache()  # Clear system context cache
             store.set("messages", [])
             self._context = create_store_context()
@@ -272,7 +271,7 @@ class REPL:
             self._print_help()
             return False
         elif cmd == "/compact":
-            clear_section_cache()  # Clear prompt section cache
+            # No-op: prompt section caching removed
             clear_system_context_cache()  # Clear system context cache
             self.console.print("[dim]Compacting conversation...[/dim]")
             messages = store.get("messages", [])

@@ -19,7 +19,7 @@ def build_system_prompt(cwd: str | None = None) -> list[str]:
 
     Returns:
         A list of prompt sections. Sections before SYSTEM_PROMPT_DYNAMIC_BOUNDARY
-        can use global cache, sections after are per-session.
+        are static (no parameters), sections after are dynamic (require parameters).
 
     Args:
         cwd: Current working directory for dynamic sections
