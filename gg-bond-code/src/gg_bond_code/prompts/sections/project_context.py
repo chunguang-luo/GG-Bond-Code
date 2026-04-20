@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from gg_bond_code.prompts.prompt_section import DANGEROUS_uncached_system_prompt_section
+from gg_bond_code.prompts.prompt_section import system_prompt_section
 
 
 def _find_project_root(start: str) -> str:
@@ -29,9 +29,8 @@ Platform: {os.name}
 Current user: {os.environ.get('USER', 'unknown')}"""
 
 
-# Create to dynamic section object (uncached - may change between sessions)
-section = DANGEROUS_uncached_system_prompt_section(
+# Create dynamic section object (may change between sessions)
+section = system_prompt_section(
     "project_context",
     lambda cwd=None: _project_context_content(cwd) if cwd else None,
-    reason="Project context (cwd, platform, user) may change between sessions",
 )

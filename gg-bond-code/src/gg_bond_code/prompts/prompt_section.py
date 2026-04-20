@@ -52,27 +52,6 @@ def system_prompt_section(
     return SystemPromptSection(name, compute)
 
 
-def DANGEROUS_uncached_system_prompt_section(
-    name: str,
-    compute: Callable[..., str | None],
-    reason: str,  # Must provide reason!
-) -> SystemPromptSection:
-    """Create a section that is recomputed every turn.
-
-    Note: This is no different from system_prompt_section since we removed
-    caching. Kept for API compatibility.
-
-    Args:
-        name: Section name for identification
-        compute: Function that returns section content or None
-        reason: Why this section must be uncached (for documentation)
-
-    Returns:
-        A SystemPromptSection object
-    """
-    return SystemPromptSection(name, compute)
-
-
 def clear_section_cache() -> None:
     """No-op kept for API compatibility."""
     pass
