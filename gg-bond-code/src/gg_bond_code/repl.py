@@ -25,7 +25,7 @@ class REPL:
         self.model = model
         self.console = Console()
         self._context = create_store_context()
-        self.runner = QueryRunner(model=model, permission_callback=self._ask_permission, context=self._context)
+        self.runner = QueryRunner(model=model, permission_callback=self._ask_permission, context=self._context, enable_streaming_tools=True)
         self.running = True
         self._last_interrupt_time: float = 0.0  # for double-Ctrl+C exit
         self._current_task: asyncio.Task | None = None  # track running query task
@@ -252,7 +252,7 @@ class REPL:
             clear_system_context_cache()  # Clear system context cache
             store.set("messages", [])
             self._context = create_store_context()
-            self.runner = QueryRunner(model=self.model, permission_callback=self._ask_permission, context=self._context)
+            self.runner = QueryRunner(model=self.model, permission_callback=self._ask_permission, context=self._context, enable_streaming_tools=True)
             self.console.clear()
             self._print_welcome()
             return False
@@ -282,6 +282,9 @@ class REPL:
         elif cmd == "/model":
             self.console.print(f"Current model: {store.get('model', 'unknown')}")
             return False
+        elif cmd == "/log":
+            self._print_transition_log()
+            return False
         else:
             self.console.print(f"Unknown command: {cmd}", style="yellow")
             # Suggest similar commands
@@ -292,7 +295,7 @@ class REPL:
 
     def _find_similar_command(self, cmd: str) -> str | None:
         """Find similar command suggestion using simple string similarity."""
-        valid_commands = ["/help", "/clear", "/compact", "/thinking", "/verbose", "/model", "/exit", "/quit", "/q"]
+        valid_commands = ["/help", "/clear", "/compact", "/thinking", "/verbose", "/model", "/log", "/exit", "/quit", "/q"]
         best_match = None
         best_score = 0
 
@@ -329,6 +332,22 @@ class REPL:
     def _print_goodbye(self) -> None:
         self.console.print("\nGoodbye!", style="blue")
 
+    def _print_transition_log(self) -> None:
+        """Print the transition log from the last query run."""
+        state = self.runner.loop_state
+        log = state.get_log()
+        if not log:
+            self.console.print("[dim]No transition log available. Run a query first.[/dim]")
+            return
+
+        self.console.print(
+            Panel(
+                state.format_log(),
+                title=f"Transition Log ({state.transition_count} transitions, {state.turn_count} turns)",
+                border_style="cyan",
+            )
+        )
+
     def _print_help(self) -> None:
         self.console.print(
             Panel(
@@ -338,6 +357,7 @@ class REPL:
                 "/thinking - Toggle thinking display\n"
                 "/verbose  - Toggle tool result details\n"
                 "/model    - Show current model\n"
+                "/log      - Show last query transition log\n"
                 "/exit     - Exit the REPL",
                 title="Commands",
                 border_style="green",

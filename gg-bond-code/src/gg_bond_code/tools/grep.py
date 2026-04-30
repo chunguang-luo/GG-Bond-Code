@@ -38,6 +38,9 @@ class GrepTool(Tool):
             "required": ["pattern"],
         }
 
+    def is_concurrency_safe(self, params: dict[str, Any]) -> bool:
+        return True
+
     async def execute(self, params: dict[str, Any]) -> ToolResult:
         pattern = params["pattern"]
         search_path = Path(params.get("path", "."))

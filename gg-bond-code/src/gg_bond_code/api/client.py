@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Model family detection ──────────────────────────────────────────
 
-_ANTHROPIC_PREFIXES = ("claude-",)
+_ANTHROPIC_PREFIXES = ("claude-", "minimax-")
 _OPENAI_PREFIXES = ("deepseek-",)
 
 _DEFAULT_BASE_URLS: dict[str, str] = {
@@ -175,10 +175,11 @@ async def _retry_stream(
 
 def _get_openai_client() -> Any:
     """Get or create an OpenAI-compatible async client."""
+    import os
     from ..config.settings import get_setting
 
     api_key = resolve_api_key()
-    base_url = get_setting("base_url") or _DEFAULT_BASE_URLS["openai"]
+    base_url = os.environ.get("GGBOND_BASE_URL") or get_setting("base_url") or _DEFAULT_BASE_URLS["openai"]
 
     from openai import AsyncOpenAI
     return AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=_DEFAULT_TIMEOUT)
@@ -311,7 +312,11 @@ def _get_anthropic_client() -> Any:
     from ..config.settings import get_setting
 
     api_key = os.environ.get("ANTHROPIC_API_KEY") or resolve_api_key()
-    base_url = os.environ.get("ANTHROPIC_BASE_URL") or get_setting("base_url") or _DEFAULT_BASE_URLS["anthropic"]
+    base_url = (
+        os.environ.get("ANTHROPIC_BASE_URL")
+        or get_setting("base_url")
+        or _DEFAULT_BASE_URLS["anthropic"]
+    )
 
     return anthropic.AsyncAnthropic(api_key=api_key, base_url=base_url)
 

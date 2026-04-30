@@ -32,6 +32,9 @@ class FileReadTool(Tool):
             "required": ["file_path"],
         }
 
+    def is_concurrency_safe(self, params: dict[str, Any]) -> bool:
+        return True
+
     async def execute(self, params: dict[str, Any]) -> ToolResult:
         file_path = Path(params["file_path"])
         offset = params.get("offset")

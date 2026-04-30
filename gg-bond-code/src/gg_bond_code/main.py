@@ -63,7 +63,7 @@ async def _run_print_mode(ctx: click.Context) -> None:
         return
 
     setup(cwd=ctx.obj["cwd"], model=ctx.obj["model"])
-    runner = QueryRunner(model=ctx.obj["model"])
+    runner = QueryRunner(model=ctx.obj["model"], enable_streaming_tools=True)
     async for event in runner.run(prompt):
         if event.type == "text":
             click.echo(event.content, nl=False)

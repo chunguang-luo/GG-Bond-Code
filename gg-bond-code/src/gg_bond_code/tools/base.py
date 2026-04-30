@@ -49,6 +49,15 @@ class Tool(ABC):
             tb = traceback.format_exc()
             return ToolResult(output=f"Tool error: {e}\n{tb}", error=True)
 
+    def is_concurrency_safe(self, params: dict[str, Any]) -> bool:
+        """Return True if this tool call is safe to run concurrently with others.
+
+        Read-only tools (Read, Glob, Grep) return True.
+        Write tools (Edit, Write, Bash) return False.
+        Subclasses can override for param-dependent decisions.
+        """
+        return False
+
     def get_timeout(self) -> float:
         """Return timeout in seconds for execute_safe."""
         return 120.0

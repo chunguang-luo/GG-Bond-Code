@@ -12,7 +12,9 @@ from .api.recovery import MaxOutputTokensRecovery, SurfaceErrorRecovery
 from .prompts.system import build_system_prompt
 from .state.context import ToolUseContext, create_store_context
 from .state.store import Store
+from .state.transition import LoopState, TransitionReason
 from .tools.base import ToolRegistry, ToolResult, create_default_registry
+from .tools.streaming_executor import StreamingToolExecutor
 from .permissions.manager import PermissionManager, PermissionDecision
 from .context.system import get_system_context, format_system_context, clear_system_context_cache
 from .context.user import get_user_context, prepend_user_context
@@ -44,6 +46,7 @@ class QueryRunner:
         context: ToolUseContext | None = None,
         enable_compaction: bool = True,
         max_messages: int = 20,
+        enable_streaming_tools: bool = False,
     ) -> None:
         # Build or use provided context
         if context is not None:
@@ -70,6 +73,9 @@ class QueryRunner:
             SurfaceErrorRecovery(),
         ]
         self._recovery_count = 0
+        self._enable_streaming_tools = enable_streaming_tools
+        self._streaming_executor: StreamingToolExecutor | None = None
+        self._loop_state = LoopState()
 
     @property
     def permissions(self) -> PermissionManager:
@@ -83,9 +89,16 @@ class QueryRunner:
     def registry(self) -> ToolRegistry:
         return self._context.registry
 
+    @property
+    def loop_state(self) -> LoopState:
+        """Return the current loop state (transition log, turn count, etc.)."""
+        return self._loop_state
+
     async def run(self, user_message: str) -> AsyncIterator[QueryEvent]:
         """Run a single user message through the conversation loop."""
         ctx = self._context
+        self._loop_state.reset()
+        self._loop_state.set_transition(TransitionReason.NEXT_TURN, detail="run started")
 
         # Get contexts (computed on demand with caching)
         system_ctx = get_system_context(ctx.get_state("cwd"))
@@ -115,6 +128,7 @@ class QueryRunner:
             if should_compact:
                 compacted_messages, reason = await strategy.compact(messages, self.model)
                 messages = compacted_messages
+                self._loop_state.set_transition(TransitionReason.COMPACT_RETRY, detail=reason)
                 # Emit a compact event for logging
                 yield QueryEvent(type="thinking", content=f"[Context compaction: {reason}]")
 
@@ -122,9 +136,17 @@ class QueryRunner:
 
         try:
             for _ in range(self.max_turns):
+                self._loop_state.turn_count += 1
                 text_parts: list[str] = []
                 thinking_parts: list[str] = []
                 tool_use_blocks: list[dict[str, Any]] = []
+
+                # Create a fresh streaming executor for this turn if enabled
+                if self._enable_streaming_tools:
+                    self._streaming_executor = StreamingToolExecutor(
+                        registry=ctx.registry,
+                        max_concurrent=10,
+                    )
 
                 try:
                     async for evt in stream_message(
@@ -150,11 +172,12 @@ class QueryRunner:
                             # Internal detail — skip for now
                             pass
                         elif evt["type"] == "tool_end":
-                            tool_use_blocks.append({
+                            tool_block = {
                                 "id": evt["id"],
                                 "name": evt["name"],
                                 "input": evt["input"],
-                            })
+                            }
+                            tool_use_blocks.append(tool_block)
                             yield QueryEvent(
                                 type="tool_use",
                                 content=f"Using tool: {evt['name']}",
@@ -164,6 +187,9 @@ class QueryRunner:
                                 tool_purpose=("".join(text_parts).strip()
                                               or "".join(thinking_parts[-3:]).strip()),
                             )
+                            # Queue tool for streaming execution
+                            if self._streaming_executor is not None:
+                                await self._streaming_executor.add_tool(tool_block)
                         elif evt["type"] == "tool_use":
                             # OpenAI backend still uses this event type
                             tool_use_blocks.append(evt)
@@ -175,7 +201,16 @@ class QueryRunner:
                                 tool_use_id=evt.get("id", ""),
                                 tool_purpose=("".join(thinking_parts).strip()),
                             )
+                            # Queue tool for streaming execution
+                            if self._streaming_executor is not None:
+                                await self._streaming_executor.add_tool(evt)
                 except Exception as e:
+                    # Discard streaming executor on error
+                    if self._streaming_executor is not None:
+                        self._streaming_executor.discard()
+                        self._streaming_executor = None
+                        self._loop_state.set_transition(TransitionReason.STREAMING_DISCARD)
+
                     # Try recovery strategies
                     recovered = False
                     for recovery_strategy in self._recovery_strategies:
@@ -184,6 +219,10 @@ class QueryRunner:
                             messages.append(recovery_message)
                             self._recovery_count += 1
                             recovered = True
+                            self._loop_state.set_transition(
+                                TransitionReason.RECOVERY_INJECTED,
+                                detail=recovery_message.get("content", "")[:80],
+                            )
                             yield QueryEvent(
                                 type="thinking",
                                 content=f"[Recovery: {recovery_message['content']}]",
@@ -192,6 +231,7 @@ class QueryRunner:
 
                     if not recovered:
                         tb = traceback.format_exc()
+                        self._loop_state.set_transition(TransitionReason.SURFACE_ERROR, detail=str(e)[:80])
                         yield QueryEvent(type="error", content=f"{e}\n{tb}")
                         return
 
@@ -232,69 +272,118 @@ class QueryRunner:
 
                 # If no tool use, we're done
                 if not has_tool_use:
+                    self._loop_state.set_transition(TransitionReason.DONE, detail="no tool use")
                     break
 
-                # Execute tools and collect results
-                if self.family == "anthropic":
-                    # Anthropic: all tool_results in a single user message
-                    tool_results_content: list[dict[str, Any]] = []
-                    for tb in tool_use_blocks:
-                        # Emit tool_start for timing (if not already sent via streaming)
-                        yield QueryEvent(
-                            type="tool_start",
-                            tool_name=tb["name"],
-                            tool_use_id=tb["id"],
-                        )
-                        decision = await self._check_permission(tb["name"], tb["input"])
-                        if decision == PermissionDecision.DENY:
-                            result = ToolResult(output="Permission denied", error=True)
-                        else:
-                            result = await self._execute_tool(tb["name"], tb["input"])
+                # Execute tools — streaming or serial mode
+                if self._streaming_executor is not None:
+                    from .tools.streaming_executor import PD_DENY
 
-                        yield QueryEvent(
-                            type="tool_result",
-                            tool_name=tb["name"],
-                            tool_result=result.output,
-                            tool_error=result.error,
-                            tool_use_id=tb["id"],
-                        )
+                    # Streaming mode: execute all queued tools with concurrency partitioning
+                    # and permission checks
+                    async def _perm_check(name: str, params: dict[str, Any]) -> str:
+                        decision = await self._check_permission(name, params)
+                        return "deny" if decision == PermissionDecision.DENY else "allow"
 
-                        tool_results_content.append({
-                            "type": "tool_result",
-                            "tool_use_id": tb["id"],
-                            "content": result.output,
-                            "is_error": result.error,
-                        })
+                    await self._streaming_executor.execute_all(permission_checker=_perm_check)
+                    completed = self._streaming_executor.get_completed_results()
 
-                    messages.append({"role": "user", "content": tool_results_content})
+                    if self.family == "anthropic":
+                        tool_results_content: list[dict[str, Any]] = []
+                        for result in completed:
+                            yield QueryEvent(
+                                type="tool_result",
+                                tool_name=result["name"],
+                                tool_result=result["output"],
+                                tool_error=result["error"],
+                                tool_use_id=result["id"],
+                            )
+                            tool_results_content.append({
+                                "type": "tool_result",
+                                "tool_use_id": result["id"],
+                                "content": result["output"],
+                                "is_error": result["error"],
+                            })
+                        messages.append({"role": "user", "content": tool_results_content})
+                    else:
+                        for result in completed:
+                            yield QueryEvent(
+                                type="tool_result",
+                                tool_name=result["name"],
+                                tool_result=result["output"],
+                                tool_error=result["error"],
+                                tool_use_id=result["id"],
+                            )
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": result["id"],
+                                "content": result["output"],
+                            })
+
+                    self._streaming_executor = None
+                    self._loop_state.set_transition(TransitionReason.TOOL_COMPLETED, detail=f"{len(completed)} tools")
                 else:
-                    # OpenAI: each tool result is a separate message
-                    for tb in tool_use_blocks:
-                        # Emit tool_start for timing (OpenAI backend doesn't stream tool_start)
-                        yield QueryEvent(
-                            type="tool_start",
-                            tool_name=tb["name"],
-                            tool_use_id=tb["id"],
-                        )
-                        decision = await self._check_permission(tb["name"], tb["input"])
-                        if decision == PermissionDecision.DENY:
-                            result = ToolResult(output="Permission denied", error=True)
-                        else:
-                            result = await self._execute_tool(tb["name"], tb["input"])
+                    # Serial mode: execute tools one by one with permission checks
+                    if self.family == "anthropic":
+                        # Anthropic: all tool_results in a single user message
+                        tool_results_content: list[dict[str, Any]] = []
+                        for tb in tool_use_blocks:
+                            yield QueryEvent(
+                                type="tool_start",
+                                tool_name=tb["name"],
+                                tool_use_id=tb["id"],
+                            )
+                            decision = await self._check_permission(tb["name"], tb["input"])
+                            if decision == PermissionDecision.DENY:
+                                result = ToolResult(output="Permission denied", error=True)
+                            else:
+                                result = await self._execute_tool(tb["name"], tb["input"])
 
-                        yield QueryEvent(
-                            type="tool_result",
-                            tool_name=tb["name"],
-                            tool_result=result.output,
-                            tool_error=result.error,
-                            tool_use_id=tb["id"],
-                        )
+                            yield QueryEvent(
+                                type="tool_result",
+                                tool_name=tb["name"],
+                                tool_result=result.output,
+                                tool_error=result.error,
+                                tool_use_id=tb["id"],
+                            )
 
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tb["id"],
-                            "content": result.output,
-                        })
+                            tool_results_content.append({
+                                "type": "tool_result",
+                                "tool_use_id": tb["id"],
+                                "content": result.output,
+                                "is_error": result.error,
+                            })
+
+                        messages.append({"role": "user", "content": tool_results_content})
+                    else:
+                        # OpenAI: each tool result is a separate message
+                        for tb in tool_use_blocks:
+                            yield QueryEvent(
+                                type="tool_start",
+                                tool_name=tb["name"],
+                                tool_use_id=tb["id"],
+                            )
+                            decision = await self._check_permission(tb["name"], tb["input"])
+                            if decision == PermissionDecision.DENY:
+                                result = ToolResult(output="Permission denied", error=True)
+                            else:
+                                result = await self._execute_tool(tb["name"], tb["input"])
+
+                            yield QueryEvent(
+                                type="tool_result",
+                                tool_name=tb["name"],
+                                tool_result=result.output,
+                                tool_error=result.error,
+                                tool_use_id=tb["id"],
+                            )
+
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tb["id"],
+                                "content": result.output,
+                            })
+
+                    self._loop_state.set_transition(TransitionReason.TOOL_COMPLETED, detail=f"{len(tool_use_blocks)} tools (serial)")
 
         finally:
             # Persist messages even if cancelled — use context's set_state

@@ -12,8 +12,8 @@ from pathlib import Path
 def resolve_api_key() -> str | None:
     """Resolve API key based on current model.
 
-    - claude-* → ANTHROPIC_API_KEY env → settings api_key
-    - others   → GGBOND_API_KEY env → settings api_key
+    - claude-* / minimax-* → ANTHROPIC_API_KEY env → settings api_key
+    - others               → GGBOND_API_KEY env → settings api_key
     """
     from ..api.client import _model_family
 
