@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Awaitable
 
 from .api.client import stream_message, get_model_family
+from .api.recovery import MaxOutputTokensRecovery, SurfaceErrorRecovery
 from .prompts.system import build_system_prompt
 from .state.context import ToolUseContext, create_store_context
 from .state.store import Store
@@ -15,6 +16,7 @@ from .tools.base import ToolRegistry, ToolResult, create_default_registry
 from .permissions.manager import PermissionManager, PermissionDecision
 from .context.system import get_system_context, format_system_context, clear_system_context_cache
 from .context.user import get_user_context, prepend_user_context
+from .compact.strategy import should_compact_messages, MessageCountStrategy
 
 
 @dataclass
@@ -40,6 +42,8 @@ class QueryRunner:
         max_turns: int = 50,
         permission_callback: Callable[[str, dict[str, Any]], Awaitable[PermissionDecision]] | None = None,
         context: ToolUseContext | None = None,
+        enable_compaction: bool = True,
+        max_messages: int = 20,
     ) -> None:
         # Build or use provided context
         if context is not None:
@@ -59,6 +63,13 @@ class QueryRunner:
         self.max_turns = max_turns
         self.system_prompt = build_system_prompt(cwd=ctx.get_state("cwd"))
         self._permission_callback = permission_callback
+        self._enable_compaction = enable_compaction
+        self._max_messages = max_messages
+        self._recovery_strategies = [
+            MaxOutputTokensRecovery(max_recovery_count=3),
+            SurfaceErrorRecovery(),
+        ]
+        self._recovery_count = 0
 
     @property
     def permissions(self) -> PermissionManager:
@@ -93,6 +104,19 @@ class QueryRunner:
         messages: list[dict[str, Any]] = ctx.get_state("messages") or []
         messages.append({"role": "user", "content": user_message})
         messages = prepend_user_context(messages, user_ctx)
+
+        # Check if compaction is needed before starting
+        if self._enable_compaction and len(messages) > self._max_messages:
+            should_compact, strategy = await should_compact_messages(
+                messages,
+                self.model,
+                strategy=MessageCountStrategy(max_messages=self._max_messages),
+            )
+            if should_compact:
+                compacted_messages, reason = await strategy.compact(messages, self.model)
+                messages = compacted_messages
+                # Emit a compact event for logging
+                yield QueryEvent(type="thinking", content=f"[Context compaction: {reason}]")
 
         tools = ctx.registry.to_api_format(self.family)
 
@@ -152,9 +176,24 @@ class QueryRunner:
                                 tool_purpose=("".join(thinking_parts).strip()),
                             )
                 except Exception as e:
-                    tb = traceback.format_exc()
-                    yield QueryEvent(type="error", content=f"{e}\n{tb}")
-                    return
+                    # Try recovery strategies
+                    recovered = False
+                    for recovery_strategy in self._recovery_strategies:
+                        if await recovery_strategy.should_recover(e, self._recovery_count):
+                            recovery_message = await recovery_strategy.recover(messages, e)
+                            messages.append(recovery_message)
+                            self._recovery_count += 1
+                            recovered = True
+                            yield QueryEvent(
+                                type="thinking",
+                                content=f"[Recovery: {recovery_message['content']}]",
+                            )
+                            break
+
+                    if not recovered:
+                        tb = traceback.format_exc()
+                        yield QueryEvent(type="error", content=f"{e}\n{tb}")
+                        return
 
                 # Build assistant message for history
                 assistant_content = "".join(text_parts)

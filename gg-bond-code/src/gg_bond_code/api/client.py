@@ -37,7 +37,7 @@ _MAX_OUTPUT_TOKENS: dict[str, int] = {
 
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 
-_MAX_RETRIES = 10
+_MAX_RETRIES = 7
 
 
 def _model_family(model: str) -> str:
