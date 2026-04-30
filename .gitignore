@@ -1,1 +1,5 @@
-/claude-code-docs/
+__pycache__/
+*.pyc
+.settings.json
+.ggbond
+.idea/
