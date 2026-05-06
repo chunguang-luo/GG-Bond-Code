@@ -20,6 +20,10 @@ _DEFAULTS: dict[str, Any] = {
     "context": {
         "max_tokens": 65536,
         "compact_threshold": 0.8,
+        "auto_compact_buffer": 13000,
+        "blocking_buffer": 3000,
+        "circuit_breaker_max_failures": 3,
+        "microcompact_keep_recent": 3,
     },
 }
 

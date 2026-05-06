@@ -30,11 +30,6 @@ _DEFAULT_BASE_URLS: dict[str, str] = {
     "openai": "https://api.deepseek.com",
 }
 
-_MAX_OUTPUT_TOKENS: dict[str, int] = {
-    "anthropic": 8192,
-    "openai": 8192,
-}
-
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 
 _MAX_RETRIES = 7
@@ -331,13 +326,16 @@ async def _stream_anthropic_inner(
     """Stream from Anthropic API. Yields normalized events."""
     client = _get_anthropic_client()
 
-    async with client.messages.stream(
-        model=model,
-        max_tokens=max_tokens,
-        system=system,
-        messages=messages,
-        tools=tools,
-    ) as stream:
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": messages,
+    }
+    if tools:
+        kwargs["tools"] = tools
+
+    async with client.messages.stream(**kwargs) as stream:
         async for event in stream:
             if event.type == "content_block_delta":
                 if event.delta.type == "text_delta":
@@ -420,8 +418,11 @@ async def stream_message(
         max_tokens = get_setting("context.max_tokens", 8192)
 
     family = _model_family(model)
-    # Clamp to model family's max output limit
-    max_tokens = min(max_tokens, _MAX_OUTPUT_TOKENS[family])
+    # Clamp to model-specific max output limit
+    from .models import get_max_output_tokens_for_model
+
+    model_max = get_max_output_tokens_for_model(model)
+    max_tokens = min(max_tokens, model_max)
 
     # Split system prompt into static/dynamic parts
     static_blocks, dynamic_blocks = _split_system_prompt(system)

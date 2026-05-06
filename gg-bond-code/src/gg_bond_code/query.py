@@ -19,6 +19,8 @@ from .permissions.manager import PermissionManager, PermissionDecision
 from .context.system import get_system_context, format_system_context, clear_system_context_cache
 from .context.user import get_user_context, prepend_user_context
 from .compact.strategy import should_compact_messages, MessageCountStrategy
+from .compact.manager import CompactManager, CompactLevel
+from .compact.budget import estimate_token_count
 
 
 @dataclass
@@ -74,6 +76,7 @@ class QueryRunner:
         ]
         self._recovery_count = 0
         self._enable_streaming_tools = enable_streaming_tools
+        self._compact_manager = CompactManager(model=self.model)
         self._streaming_executor: StreamingToolExecutor | None = None
         self._loop_state = LoopState()
 
@@ -119,17 +122,30 @@ class QueryRunner:
         messages = prepend_user_context(messages, user_ctx)
 
         # Check if compaction is needed before starting
-        if self._enable_compaction and len(messages) > self._max_messages:
-            should_compact, strategy = await should_compact_messages(
-                messages,
-                self.model,
-                strategy=MessageCountStrategy(max_messages=self._max_messages),
-            )
-            if should_compact:
-                compacted_messages, reason = await strategy.compact(messages, self.model)
+        if self._enable_compaction:
+            token_usage = self._compact_manager.get_token_usage(messages)
+            level, warning_state = self._compact_manager.evaluate(token_usage)
+
+            if level == CompactLevel.BLOCKING:
+                self._loop_state.set_transition(
+                    TransitionReason.COMPACT_BLOCKING,
+                    detail=f"token usage: {token_usage}",
+                )
+                yield QueryEvent(
+                    type="error",
+                    content="Context window full. Use /compact to manually compress the conversation.",
+                )
+                return
+
+            if level in (CompactLevel.MICRO, CompactLevel.FULL):
+                compacted_messages, reason = await self._compact_manager.execute(level, messages)
                 messages = compacted_messages
-                self._loop_state.set_transition(TransitionReason.COMPACT_RETRY, detail=reason)
-                # Emit a compact event for logging
+                transition_reason = (
+                    TransitionReason.COMPACT_MICRO
+                    if level == CompactLevel.MICRO
+                    else TransitionReason.COMPACT_FULL
+                )
+                self._loop_state.set_transition(transition_reason, detail=reason)
                 yield QueryEvent(type="thinking", content=f"[Context compaction: {reason}]")
 
         tools = ctx.registry.to_api_format(self.family)

@@ -32,6 +32,9 @@ class TransitionReason(Enum):
     MAX_TOKENS_RECOVERY = "max_tokens_recovery"    # Recovery from output limit hit
     RECOVERY_INJECTED = "recovery_injected"     # Recovery message injected into conversation
     STREAMING_DISCARD = "streaming_discard"     # Streaming executor discarded on error
+    COMPACT_MICRO = "compact_micro"             # Microcompact executed
+    COMPACT_FULL = "compact_full"               # Full Compact executed
+    COMPACT_BLOCKING = "compact_blocking"       # Context full — blocked new query
     DONE = "done"                               # Loop ended normally
 
 

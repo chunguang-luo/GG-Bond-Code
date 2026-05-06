@@ -41,14 +41,6 @@ class REPL:
     def show_thinking(self, value: bool) -> None:
         Store().set("ui.show_thinking", value)
 
-    @property
-    def show_tool_details(self) -> bool:
-        return Store().get("ui.show_tool_details", True)
-
-    @show_tool_details.setter
-    def show_tool_details(self, value: bool) -> None:
-        Store().set("ui.show_tool_details", value)
-
     async def run(self) -> None:
         """Main REPL loop."""
         self._print_welcome()
@@ -65,7 +57,7 @@ class REPL:
 
                 # Handle slash commands
                 if user_input.startswith("/"):
-                    should_continue = self._handle_command(user_input)
+                    should_continue = await self._handle_command(user_input)
                     if not should_continue:
                         continue
                     continue
@@ -184,8 +176,9 @@ class REPL:
                         tool_start_times[event.tool_use_id] = time.monotonic()
                     if event.tool_purpose:
                         text_output.append(f"\n\n{event.tool_purpose}")
-                    params = self._format_params(event.tool_input)
-                    text_output.append(f"\n\n⚙️ `{event.tool_name}` ({params})")
+                    # Format: ⚙️ ToolName(key_param=value, ...)
+                    tool_label = self._format_tool_label(event.tool_name, event.tool_input)
+                    text_output.append(f"\n\n⚙️ {tool_label}")
 
                     # Resume Live display after permission is handled
                     if self._live is not None:
@@ -198,19 +191,25 @@ class REPL:
                         elapsed_ms = (time.monotonic() - t0) * 1000
                         elapsed = f" ({elapsed_ms:.0f}ms)"
 
+                    # Format: ⎿ result summary
                     if event.tool_error:
-                        text_output.append(f"\n\n❌ `{event.tool_name}`{elapsed}\n\n")
-                        if self.show_tool_details:
-                            text_output.append(f"\n\n📄 结果内容 :\n\n```python\n{event.tool_result}\n```\n\n")
+                        text_output.append(f"\n\n  ⎿  Error{elapsed}\n\n")
+                        if event.tool_result.strip():
+                            text_output.append("```\n")
+                            for line in event.tool_result.splitlines()[:10]:
+                                text_output.append(f"  {line}\n")
+                            text_output.append("```\n")
                     else:
-                        result = event.tool_result
-                        if len(result) > 500:
-                            result = result[:500] + "..."
-                        if self.show_tool_details and result.strip():
-                            text_output.append(f"\n\n✅ `{event.tool_name}`{elapsed}\n\n")
-                            text_output.append(f"\n\n📄 结果内容 :\n\n```python\n{result}\n```\n\n")
-                        else:
-                            text_output.append(f"\n\n✅ `{event.tool_name}`{elapsed}\n\n")
+                        result_summary = self._format_tool_result(event.tool_name, event.tool_result)
+                        text_output.append(f"\n\n  ⎿  {result_summary}{elapsed}\n\n")
+                        detail_lines = event.tool_result.strip().splitlines()
+                        if len(detail_lines) > 1:
+                            text_output.append("```\n")
+                            for line in detail_lines[:8]:
+                                text_output.append(f"  {line}\n")
+                            if len(detail_lines) > 8:
+                                text_output.append(f"  … ({len(detail_lines)} lines total)\n")
+                            text_output.append("```\n")
 
                 elif event.type == "error":
                     text_output.append(f"\n\n**Error:** {event.content}")
@@ -227,20 +226,17 @@ class REPL:
             self.console.print("\n[query stopped]", style="yellow")
             return
         finally:
-            # Ensure Live is stopped and cleaned up
-            if self._live is not None:
-                self._live.stop()
-
             # Close thinking block if still open
             if in_thinking and self.show_thinking:
                 text_output.append("```\n")
 
-            # Final render with all content as Markdown
-            full_text = "".join(text_output).strip()
-            if full_text:
-                self.console.print(Markdown(full_text))
+            # Ensure Live is stopped and cleaned up
+            if self._live is not None:
+                self._live.stop()
 
-    def _handle_command(self, command: str) -> bool:
+            # Live with transient=False keeps content after exit, so no need to reprint
+
+    async def _handle_command(self, command: str) -> bool:
         """Handle slash commands. Returns True if should continue REPL."""
         cmd = command.strip().lower()
         store = Store()
@@ -261,11 +257,6 @@ class REPL:
             state = "ON" if self.show_thinking else "OFF"
             self.console.print(f"Thinking display: [green]{state}[/green]")
             return False
-        elif cmd == "/verbose":
-            self.show_tool_details = not self.show_tool_details
-            state = "ON" if self.show_tool_details else "OFF"
-            self.console.print(f"Tool details: [green]{state}[/green]")
-            return False
         elif cmd == "/help":
             self._print_help()
             return False
@@ -274,13 +265,18 @@ class REPL:
             self.console.print("[dim]Compacting conversation...[/dim]")
             messages = store.get("messages", [])
             if messages:
-                # Simple compact: keep only last 4 messages
-                compacted = messages[-4:]
+                from .compact.manager import CompactManager, CompactLevel
+                manager = CompactManager(model=self.model or store.get("model", "deepseek-chat"))
+                # Force FULL level for manual /compact
+                compacted, reason = await manager.execute(CompactLevel.FULL, messages)
                 store.set("messages", compacted)
-                self.console.print(f"[green]Compacted {len(messages)} → {len(compacted)} messages[/green]")
+                self.console.print(f"[green]Compacted: {reason}[/green]")
             return False
         elif cmd == "/model":
             self.console.print(f"Current model: {store.get('model', 'unknown')}")
+            return False
+        elif cmd == "/context":
+            self._print_context_info(store)
             return False
         elif cmd == "/log":
             self._print_transition_log()
@@ -295,7 +291,7 @@ class REPL:
 
     def _find_similar_command(self, cmd: str) -> str | None:
         """Find similar command suggestion using simple string similarity."""
-        valid_commands = ["/help", "/clear", "/compact", "/thinking", "/verbose", "/model", "/log", "/exit", "/quit", "/q"]
+        valid_commands = ["/help", "/clear", "/compact", "/context", "/thinking", "/model", "/log", "/exit", "/quit", "/q"]
         best_match = None
         best_score = 0
 
@@ -321,14 +317,53 @@ class REPL:
 
     def _print_welcome(self) -> None:
         store = Store()
+        model = self.model or store.get("model", "unknown")
+        cwd = store.get("cwd", "unknown")
+        # Shorten cwd: show last 2 segments or ~-relative path
+        import os
+        home = os.path.expanduser("~")
+        display_cwd = cwd.replace(home, "~", 1) if cwd.startswith(home) else cwd
+        if len(display_cwd) > 40:
+            parts = display_cwd.split("/")
+            display_cwd = "/".join(parts[-3:]) if len(parts) > 3 else display_cwd
+
+        # Build two-column layout using Rich Table
+        from rich.table import Table
+        from rich.text import Text
+
+        # Left column: welcome + logo
+        logo = Text()
+        logo.append("   ^-----^\n", style="bold magenta")
+        logo.append("  ( o   o )\n", style="bold magenta")
+        logo.append(" (   ( )   )\n", style="bold magenta")
+        logo.append("  \  ---  /\n", style="bold magenta")
+
+        welcome = Text()
+        welcome.append("  Welcome back!", style="bold")
+
+        left = Text.assemble(logo, welcome)
+
+        # Right column: tips + info
+        right = Text()
+        right.append(" Tips for getting started\n", style="bold")
+        right.append(" Type /help for available commands\n", style="dim")
+        right.append(" Type /context to check token usage\n", style="dim")
+        right.append(" ─────────────────────────────────\n", style="dim")
+        right.append(f" {model}  ·  {display_cwd}", style="")
+
+        # Combine into a panel
+        table = Table(show_header=False, box=None, padding=0, expand=False)
+        table.add_column(min_width=22)
+        table.add_column(min_width=38)
+        table.add_row(left, right)
+
         self.console.print(
             Panel(
-                f"GG Bond Code v0.1.0\nModel: {store.get('model', 'unknown')}\nCWD: {store.get('cwd', 'unknown')}",
-                title="GG Bond Code",
+                table,
+                title="[bold]GG Bond Code[/bold]",
                 border_style="blue",
             )
         )
-        self.console.print("Type /help for commands, /exit to quit.\n")
     def _print_goodbye(self) -> None:
         self.console.print("\nGoodbye!", style="blue")
 
@@ -348,14 +383,71 @@ class REPL:
             )
         )
 
+    def _print_context_info(self, store: Store) -> None:
+        """Print context window details for the current model."""
+        from .api.models import get_model_spec
+        from .compact.budget import (
+            estimate_token_count,
+            get_effective_context_window,
+            get_auto_compact_threshold,
+            calculate_token_warning_state,
+        )
+
+        model = self.model or store.get("model", "deepseek-chat")
+        spec = get_model_spec(model)
+        messages = store.get("messages", [])
+        token_usage = estimate_token_count(messages)
+        effective = get_effective_context_window(model)
+        threshold = get_auto_compact_threshold(model)
+        warning_state = calculate_token_warning_state(token_usage, model)
+
+        used_pct = round((token_usage / effective) * 100) if effective > 0 else 0
+        bar_len = 30
+        filled = min(bar_len, round(bar_len * token_usage / effective)) if effective > 0 else 0
+        bar = "█" * filled + "░" * (bar_len - filled)
+
+        # Determine color based on warning state
+        if warning_state.is_at_blocking:
+            bar_color = "red"
+        elif warning_state.is_above_auto_compact:
+            bar_color = "yellow"
+        elif warning_state.is_above_warning:
+            bar_color = "yellow"
+        else:
+            bar_color = "green"
+
+        lines = [
+            f"[bold]Model[/bold]:           {model}",
+            f"[bold]Context Window[/bold]:   {spec.context_window:,} tokens",
+            f"[bold]Max Output[/bold]:       {spec.max_output_tokens:,} tokens",
+            f"[bold]Effective Window[/bold]: {effective:,} tokens",
+            f"[bold]Auto-Compact at[/bold]:  {threshold:,} tokens ({round(threshold / effective * 100)}% of effective)",
+            f"[bold]Blocking at[/bold]:      {effective - 3000:,} tokens",
+            "",
+            f"[bold]Token Usage[/bold]:      {token_usage:,} / {effective:,} ({used_pct}%)",
+            f"                    [{bar_color}]{bar}[/{bar_color}] {used_pct}%",
+            f"[bold]Messages[/bold]:         {len(messages)}",
+            "",
+            f"[bold]Warning State[/bold]:    {'🔴 Blocking' if warning_state.is_at_blocking else '🟡 Auto-Compact' if warning_state.is_above_auto_compact else '🟡 Warning' if warning_state.is_above_warning else '🟢 OK'}",
+            f"[bold]Percent Left[/bold]:     {warning_state.percent_left}%",
+        ]
+
+        self.console.print(
+            Panel(
+                "\n".join(lines),
+                title="Context Window",
+                border_style=bar_color,
+            )
+        )
+
     def _print_help(self) -> None:
         self.console.print(
             Panel(
                 "/help     - Show this help\n"
                 "/clear    - Clear conversation\n"
                 "/compact  - Compact conversation history\n"
+                "/context  - Show context window details\n"
                 "/thinking - Toggle thinking display\n"
-                "/verbose  - Toggle tool result details\n"
                 "/model    - Show current model\n"
                 "/log      - Show last query transition log\n"
                 "/exit     - Exit the REPL",
@@ -374,3 +466,67 @@ class REPL:
                 val = val[:60] + "..."
             parts.append(f"{k}={val!r}")
         return ", ".join(parts)
+
+    @staticmethod
+    def _format_tool_label(name: str, params: dict) -> str:
+        """Format a tool call in Claude Code style: ToolName(key_param=value).
+
+        Shows only the most relevant parameter (file_path, command, pattern, etc.)
+        instead of all parameters.
+        """
+        # Pick the most relevant param to show inline
+        priority_keys = [
+            "file_path", "path", "command", "pattern", "query",
+            "url", "name", "description", "content",
+        ]
+        for key in priority_keys:
+            if key in params:
+                val = str(params[key])
+                if len(val) > 80:
+                    val = val[:77] + "..."
+                return f"`{name}`({val})"
+        # Fallback: show first param
+        if params:
+            first_key = next(iter(params))
+            val = str(params[first_key])
+            if len(val) > 80:
+                val = val[:77] + "..."
+            return f"`{name}`({val})"
+        return f"`{name}`()"
+
+    @staticmethod
+    def _format_tool_result(name: str, result: str) -> str:
+        """Format a tool result summary for display.
+
+        For file tools, shows the file path and line count.
+        For other tools, shows a brief summary.
+        """
+        result = result.strip()
+        if not result:
+            return "Done"
+
+        # Detect common result patterns
+        if result.startswith("Successfully wrote") or result.startswith("Wrote"):
+            # Extract file path and line count from Write/Edit results
+            lines = result.count("\n") + 1
+            # Try to extract file path
+            parts = result.split()
+            for i, p in enumerate(parts):
+                if "/" in p or p.endswith(".py") or p.endswith(".md") or p.endswith(".txt"):
+                    return f"Wrote {lines} lines to {p}"
+            return f"Wrote {lines} lines"
+
+        # For Read results, count lines
+        if name in ("Read", "Grep", "Glob"):
+            line_count = result.count("\n") + 1
+            if line_count > 3:
+                return f"{line_count} lines"
+
+        # Truncate long results
+        if len(result) > 100:
+            first_line = result.split("\n")[0]
+            if len(first_line) > 100:
+                return first_line[:97] + "..."
+            return first_line
+
+        return result

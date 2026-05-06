@@ -18,7 +18,9 @@ def test_transition_reason_members():
         "NEXT_TURN", "COMPACT_RETRY", "SURFACE_ERROR",
         "STOP_HOOK_BLOCKING", "USER_INTERRUPT", "TOOL_COMPLETED",
         "MAX_TOKENS_ESCALATED", "MAX_TOKENS_RECOVERY",
-        "RECOVERY_INJECTED", "STREAMING_DISCARD", "DONE",
+        "RECOVERY_INJECTED", "STREAMING_DISCARD",
+        "COMPACT_MICRO", "COMPACT_FULL", "COMPACT_BLOCKING",
+        "DONE",
     }
     actual = {r.name for r in TransitionReason}
     assert actual == expected
