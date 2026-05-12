@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import traceback
 from abc import ABC, abstractmethod
 from typing import Any
 
 from pydantic import BaseModel
+
+# Context variable for injecting ToolUseContext into tools during execution.
+# Uses contextvars instead of instance attributes because ToolRegistry stores
+# one instance per tool name — concurrent tool calls share the same instance,
+# so instance-level _context would be unsafe. contextvars are inherently safe.
+_current_context: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "_tool_context", default=None,
+)
 
 
 class ToolResult(BaseModel):
@@ -27,6 +36,14 @@ class Tool(ABC):
     def __init__(self) -> None:
         self.name = self.__class__.name
         self.description = self.__class__.description
+
+    @property
+    def _context(self) -> Any | None:
+        """Access the current ToolUseContext via contextvars.
+
+        Set by QueryRunner before tool execution, cleared after.
+        """
+        return _current_context.get()
 
     @abstractmethod
     def get_schema(self) -> dict[str, Any]:

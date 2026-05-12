@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from .base import ToolRegistry, ToolResult
+from .base import ToolRegistry, ToolResult, _current_context
 
 # Permission decision constants
 PD_ALLOW = "allow"
@@ -81,9 +81,11 @@ class StreamingToolExecutor:
         self,
         registry: ToolRegistry,
         max_concurrent: int = 10,
+        context: Any | None = None,
     ) -> None:
         self.registry = registry
         self.max_concurrent = max_concurrent
+        self._context = context
         self._queue: asyncio.Queue[ToolExecution] = asyncio.Queue()
         self._pending: list[ToolExecution] = []
         self._completed: list[ToolExecution] = []
@@ -199,7 +201,15 @@ class StreamingToolExecutor:
         if not tool:
             return ToolResult(output=f"Unknown tool: {execution.tool_name}", error=True)
 
-        return await tool.execute_safe(execution.input)
+        # Inject context via contextvars for tools that need it
+        token = None
+        if self._context is not None:
+            token = _current_context.set(self._context)
+        try:
+            return await tool.execute_safe(execution.input)
+        finally:
+            if token is not None:
+                _current_context.reset(token)
 
     def get_completed_results(self) -> list[dict[str, Any]]:
         """Get results of completed tool executions.

@@ -214,6 +214,22 @@ class REPL:
                 elif event.type == "error":
                     text_output.append(f"\n\n**Error:** {event.content}")
 
+                elif event.type == "warning":
+                    level = event.metadata.get("level", "warning")
+                    percent = event.metadata.get("percent_used", 0)
+                    bar_len = 20
+                    filled = min(bar_len, round(bar_len * percent / 100))
+                    bar = "█" * filled + "░" * (bar_len - filled)
+                    if level == "blocking":
+                        style = "bold red"
+                    elif level == "error":
+                        style = "red"
+                    else:
+                        style = "yellow"
+                    text_output.append(
+                        f"\n\n[{style}]Context: [{bar}] {percent}% — {event.content}[/{style}]"
+                    )
+
                 # Update Live display with current accumulated content
                 # Let Live handle refresh timing automatically
                 full_text = "".join(text_output)

@@ -13,12 +13,13 @@ from .prompts.system import build_system_prompt
 from .state.context import ToolUseContext, create_store_context
 from .state.store import Store
 from .state.transition import LoopState, TransitionReason
-from .tools.base import ToolRegistry, ToolResult, create_default_registry
+from .tools.base import ToolRegistry, ToolResult, create_default_registry, _current_context
 from .tools.streaming_executor import StreamingToolExecutor
 from .permissions.manager import PermissionManager, PermissionDecision
 from .context.system import get_system_context, format_system_context, clear_system_context_cache
 from .context.user import get_user_context, prepend_user_context
 from .compact.strategy import should_compact_messages, MessageCountStrategy
+from .compact.warning import CompactWarningManager
 from .compact.manager import CompactManager, CompactLevel
 from .compact.budget import estimate_token_count
 
@@ -34,6 +35,7 @@ class QueryEvent:
     tool_error: bool = False
     tool_purpose: str = ""  # model's text before this tool call, explaining intent
     tool_use_id: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)  # Extra data (e.g. warning level)
 
 
 class QueryRunner:
@@ -76,9 +78,10 @@ class QueryRunner:
         ]
         self._recovery_count = 0
         self._enable_streaming_tools = enable_streaming_tools
-        self._compact_manager = CompactManager(model=self.model)
+        self._compact_manager = CompactManager(model=self.model, file_cache=self._context.file_cache)
         self._streaming_executor: StreamingToolExecutor | None = None
         self._loop_state = LoopState()
+        self._warning_manager = CompactWarningManager()
 
     @property
     def permissions(self) -> PermissionManager:
@@ -102,6 +105,8 @@ class QueryRunner:
         ctx = self._context
         self._loop_state.reset()
         self._loop_state.set_transition(TransitionReason.NEXT_TURN, detail="run started")
+        # Clear warning suppression from previous turns
+        self._warning_manager.clear_suppression()
 
         # Get contexts (computed on demand with caching)
         system_ctx = get_system_context(ctx.get_state("cwd"))
@@ -148,6 +153,12 @@ class QueryRunner:
                 self._loop_state.set_transition(transition_reason, detail=reason)
                 yield QueryEvent(type="thinking", content=f"[Context compaction: {reason}]")
 
+                # Warning suppression: suppress after FULL, clear after MICRO
+                if level == CompactLevel.FULL:
+                    self._warning_manager.suppress()
+                elif level == CompactLevel.MICRO:
+                    self._warning_manager.clear_suppression()
+
         tools = ctx.registry.to_api_format(self.family)
 
         try:
@@ -162,6 +173,7 @@ class QueryRunner:
                     self._streaming_executor = StreamingToolExecutor(
                         registry=ctx.registry,
                         max_concurrent=10,
+                        context=self._context,
                     )
 
                 try:
@@ -405,6 +417,22 @@ class QueryRunner:
             # Persist messages even if cancelled — use context's set_state
             ctx.set_state("messages", messages)
 
+        # Emit warning event after the conversation loop completes
+        if self._enable_compaction:
+            token_usage = self._compact_manager.get_token_usage(messages)
+            warning = self._warning_manager.evaluate(token_usage, self.model)
+            if warning.level != "ok" and not self._warning_manager.is_suppressed:
+                yield QueryEvent(
+                    type="warning",
+                    content=warning.message,
+                    metadata={
+                        "level": warning.level,
+                        "percent_used": warning.percent_used,
+                        "token_usage": warning.token_usage,
+                        "effective_window": warning.effective_window,
+                    },
+                )
+
     async def _check_permission(self, tool_name: str, params: dict[str, Any]) -> PermissionDecision:
         """Check permission, invoking callback for ASK decisions."""
         decision = self._context.permissions.check(tool_name, params)
@@ -424,16 +452,21 @@ class QueryRunner:
         if not tool:
             return ToolResult(output=f"Unknown tool: {name}", error=True)
 
-        # Wrap tool execution with retry protection
-        # 3 attempts for transient errors (5xx, connection errors)
-        return await with_retry(
-            tool.execute_safe,
-            params,
-            policy=RetryPolicy(
-                delay_multipliers=[1, 2, 4],
-                respect_retry_after=True,
-                max_retries=10,
-            ),
-            query_type=QueryType.FOREGROUND,
-            description=f"Execute tool: {name}",
-        )
+        # Inject context via contextvars so tools can access FileStateCache
+        token = _current_context.set(self._context)
+        try:
+            # Wrap tool execution with retry protection
+            # 3 attempts for transient errors (5xx, connection errors)
+            return await with_retry(
+                tool.execute_safe,
+                params,
+                policy=RetryPolicy(
+                    delay_multipliers=[1, 2, 4],
+                    respect_retry_after=True,
+                    max_retries=10,
+                ),
+                query_type=QueryType.FOREGROUND,
+                description=f"Execute tool: {name}",
+            )
+        finally:
+            _current_context.reset(token)

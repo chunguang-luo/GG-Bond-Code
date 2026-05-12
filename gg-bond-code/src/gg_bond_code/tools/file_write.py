@@ -32,9 +32,23 @@ class FileWriteTool(Tool):
         file_path = Path(params["file_path"])
         content = params["content"]
 
+        # Safety check: block writes to partially-viewed files
+        if self._context is not None:
+            allowed, reason = self._context.file_cache.can_edit(str(file_path))
+            if not allowed:
+                return ToolResult(output=f"Write blocked: {reason}", error=True)
+
         try:
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content)
+
+            # Update file cache after successful write
+            if self._context is not None:
+                try:
+                    self._context.file_cache.record_write(str(file_path), content)
+                except Exception:
+                    pass  # Cache update is best-effort
+
             return ToolResult(output=f"Wrote {len(content)} bytes to {file_path}")
         except Exception as e:
             return ToolResult(output=str(e), error=True)

@@ -25,6 +25,11 @@ WARNING_THRESHOLD_BUFFER_TOKENS = 20_000  # Buffer for warning level
 ERROR_THRESHOLD_BUFFER_TOKENS = 20_000  # Buffer for error level
 BLOCKING_BUFFER_TOKENS = 3_000  # Buffer for blocking level
 
+# Post-compact rebuild budget
+POST_COMPACT_TOKEN_BUDGET = 10_000  # Total tokens for re-injecting files after compact
+MAX_TOKENS_PER_FILE = 5_000  # Max tokens per re-injected file
+MAX_FILES_POST_COMPACT = 5  # Max number of files to re-inject
+
 
 # ── Token estimation ─────────────────────────────────────────────────
 

@@ -46,6 +46,12 @@ class FileEditTool(Tool):
         if not file_path.exists():
             return ToolResult(output=f"File not found: {file_path}", error=True)
 
+        # Safety check: block edits to partially-viewed files
+        if self._context is not None:
+            allowed, reason = self._context.file_cache.can_edit(str(file_path))
+            if not allowed:
+                return ToolResult(output=f"Edit blocked: {reason}", error=True)
+
         content = file_path.read_text()
 
         if old_string not in content:
@@ -63,4 +69,12 @@ class FileEditTool(Tool):
             new_content = content.replace(old_string, new_string, 1)
 
         file_path.write_text(new_content)
+
+        # Update file cache after successful edit
+        if self._context is not None:
+            try:
+                self._context.file_cache.record_edit(str(file_path), new_content)
+            except Exception:
+                pass  # Cache update is best-effort
+
         return ToolResult(output=f"Edited {file_path}")

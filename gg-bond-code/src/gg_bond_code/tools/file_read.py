@@ -46,7 +46,8 @@ class FileReadTool(Tool):
             return ToolResult(output=f"Not a file: {file_path}", error=True)
 
         try:
-            lines = file_path.read_text(errors="replace").splitlines(keepends=True)
+            full_text = file_path.read_text(errors="replace")
+            lines = full_text.splitlines(keepends=True)
             start = (offset or 1) - 1  # 1-indexed to 0-indexed
             end = start + limit if limit else len(lines)
             selected = lines[start:end]
@@ -56,6 +57,19 @@ class FileReadTool(Tool):
             for i, line in enumerate(selected, start=start + 1):
                 numbered.append(f"{i:6d}\t{line}")
             output = "".join(numbered)
+
+            # Record state in FileStateCache (best-effort)
+            if self._context is not None:
+                try:
+                    self._context.file_cache.record_read(
+                        path=str(file_path),
+                        content=full_text,
+                        offset=offset,
+                        limit=limit,
+                    )
+                except Exception:
+                    pass  # Cache recording is best-effort
+
             return ToolResult(output=output)
         except Exception as e:
             return ToolResult(output=str(e), error=True)

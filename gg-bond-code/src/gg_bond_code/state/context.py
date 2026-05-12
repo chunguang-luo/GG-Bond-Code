@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from ..permissions.manager import PermissionManager
 from ..tools.base import ToolRegistry
+from ..compact.file_cache import FileStateCache
 
 
 @dataclass
@@ -46,6 +47,7 @@ class ToolUseContext:
     permissions: PermissionManager = field(default_factory=PermissionManager)
     registry: ToolRegistry = field(default_factory=ToolRegistry)
     abort: asyncio.Event = field(default_factory=asyncio.Event)
+    file_cache: FileStateCache = field(default_factory=FileStateCache)
 
     # ── Identity ──────────────────────────────────────────────────────
     agent_id: str | None = None
@@ -123,6 +125,7 @@ def create_subagent_context(
         permissions=parent.permissions,
         registry=parent.registry,
         abort=abort,
+        file_cache=parent.file_cache.clone(),
         agent_id=agent_id,
         agent_type=agent_type,
     )

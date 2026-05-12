@@ -17,12 +17,16 @@ from enum import Enum
 from typing import Any
 
 from .budget import (
+    MAX_FILES_POST_COMPACT,
+    MAX_TOKENS_PER_FILE,
+    POST_COMPACT_TOKEN_BUDGET,
     TokenWarningState,
     calculate_token_warning_state,
     estimate_token_count,
     get_auto_compact_threshold,
 )
 from .circuit_breaker import CompactCircuitBreaker
+from .file_cache import FileStateCache
 from .full import FullCompactStrategy
 from .micro import microcompact_messages
 
@@ -39,10 +43,11 @@ class CompactLevel(Enum):
 class CompactManager:
     """Orchestrate multi-level compaction based on token usage."""
 
-    def __init__(self, model: str) -> None:
+    def __init__(self, model: str, file_cache: FileStateCache | None = None) -> None:
         self._model = model
         self._circuit_breaker = CompactCircuitBreaker(max_failures=3)
         self._full_strategy = FullCompactStrategy()
+        self._file_cache = file_cache
 
     @property
     def circuit_breaker(self) -> CompactCircuitBreaker:
@@ -112,6 +117,11 @@ class CompactManager:
             self._circuit_breaker._consecutive_failures = (
                 self._full_strategy.circuit_breaker.consecutive_failures
             )
+            # Re-inject recently accessed file contents after compact
+            compacted = self._rebuild_after_compact(compacted)
+            # Clear file cache (contents are now in the message history)
+            if self._file_cache is not None:
+                self._file_cache.clear()
             return compacted, reason
 
         return messages, "Unknown compact level"
@@ -119,3 +129,57 @@ class CompactManager:
     def get_token_usage(self, messages: list[dict[str, Any]]) -> int:
         """Estimate token usage for a message list."""
         return estimate_token_count(messages)
+
+    def _rebuild_after_compact(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Re-inject recently accessed file contents after Full Compact.
+
+        After compact, the model loses knowledge of recently accessed files.
+        This method injects their contents as a user message so the model
+        retains context about files it was working on, within token budget.
+        """
+        if self._file_cache is None:
+            return messages
+
+        recent = self._file_cache.get_recent(MAX_FILES_POST_COMPACT)
+        if not recent:
+            return messages
+
+        # Priority sort: recently edited > recently read (then by recency)
+        recent.sort(key=lambda e: (0 if e.was_edited else 1, -e.timestamp))
+
+        # Build file content blocks with per-file token truncation
+        file_blocks: list[str] = []
+        total_tokens = 0
+
+        for entry in recent:
+            content = entry.content
+            estimated_tokens = len(content) // 4
+
+            if estimated_tokens > MAX_TOKENS_PER_FILE:
+                # Truncate to per-file budget
+                truncation_char = MAX_TOKENS_PER_FILE * 4
+                content = content[:truncation_char] + "\n... (truncated)"
+
+            entry_tokens = len(content) // 4
+            if total_tokens + entry_tokens > POST_COMPACT_TOKEN_BUDGET:
+                break
+
+            label = f"--- {entry.path} (recently {'edited' if entry.was_edited else 'read'}) ---\n"
+            file_blocks.append(label + content)
+            total_tokens += entry_tokens
+
+        if not file_blocks:
+            return messages
+
+        # Inject as a user message after the summary (index 0)
+        attachment = (
+            "[Recently accessed files after context compaction]\n\n"
+            + "\n\n".join(file_blocks)
+        )
+        inject_message = {"role": "user", "content": attachment}
+
+        # Insert after the summary message but before recent messages
+        return [messages[0], inject_message] + messages[1:]
