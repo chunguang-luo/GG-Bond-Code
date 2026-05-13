@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import fnmatch
 from enum import Enum
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from ..config.settings import get_setting, update_setting
+
+if TYPE_CHECKING:
+    from ..tools.base import ToolRegistry
 
 
 class PermissionDecision(Enum):
@@ -24,8 +27,16 @@ class PermissionManager:
         # Runtime session grants (user approved during this session)
         self._session_allowed: set[str] = set()
 
-    def check(self, tool_name: str, params: dict[str, Any]) -> PermissionDecision:
-        """Check if a tool execution is permitted."""
+    def check(
+        self, tool_name: str, params: dict[str, Any], *, registry: ToolRegistry | None = None,
+    ) -> PermissionDecision:
+        """Check if a tool execution is permitted.
+
+        Args:
+            tool_name: Name of the tool to check.
+            params: Tool parameters.
+            registry: Optional ToolRegistry to look up is_read_only() on the tool.
+        """
         key = self._make_key(tool_name, params)
 
         # Check deny list first (highest priority)
@@ -43,10 +54,11 @@ class PermissionManager:
             if self._match(grant, key):
                 return PermissionDecision.ALLOW
 
-        # Default: ask for dangerous tools, allow read-only
-        read_only_tools = {"Read", "Glob", "Grep"}
-        if tool_name in read_only_tools:
-            return PermissionDecision.ALLOW
+        # Auto-allow read-only tools via is_read_only() on the tool itself
+        if registry is not None:
+            tool = registry.get(tool_name)
+            if tool is not None and tool.is_read_only(params):
+                return PermissionDecision.ALLOW
 
         return PermissionDecision.ASK
 

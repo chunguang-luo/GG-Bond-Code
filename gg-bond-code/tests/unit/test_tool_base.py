@@ -72,6 +72,40 @@ def test_default_timeout():
     assert t.get_timeout() == 120.0
 
 
+def test_is_read_only_default():
+    """is_read_only defaults to False (fail-closed)."""
+    t = DummyTool()
+    assert t.is_read_only({}) is False
+
+
+def test_is_concurrency_safe_default():
+    """is_concurrency_safe defaults to False (fail-closed)."""
+    t = DummyTool()
+    assert t.is_concurrency_safe({}) is False
+
+
+def test_builtin_read_only_tools():
+    """Read, Glob, Grep are read-only."""
+    from gg_bond_code.tools.file_read import FileReadTool
+    from gg_bond_code.tools.glob import GlobTool
+    from gg_bond_code.tools.grep import GrepTool
+
+    assert FileReadTool().is_read_only({}) is True
+    assert GlobTool().is_read_only({}) is True
+    assert GrepTool().is_read_only({}) is True
+
+
+def test_builtin_write_tools_not_read_only():
+    """Bash, Edit, Write are not read-only."""
+    from gg_bond_code.tools.bash import BashTool
+    from gg_bond_code.tools.file_edit import FileEditTool
+    from gg_bond_code.tools.file_write import FileWriteTool
+
+    assert BashTool().is_read_only({}) is False
+    assert FileEditTool().is_read_only({}) is False
+    assert FileWriteTool().is_read_only({}) is False
+
+
 # ── Tool Schema Cache tests ──────────────────────────────────────────
 
 

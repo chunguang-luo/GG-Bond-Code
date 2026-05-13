@@ -75,6 +75,14 @@ class Tool(ABC):
         """
         return False
 
+    def is_read_only(self, params: dict[str, Any]) -> bool:
+        """Return True if this tool only reads without modifying anything.
+
+        Defaults to False (fail-closed: assume write unless explicitly declared).
+        Used by PermissionManager to auto-allow read-only tools.
+        """
+        return False
+
     def get_timeout(self) -> float:
         """Return timeout in seconds for execute_safe."""
         return 120.0

@@ -435,7 +435,9 @@ class QueryRunner:
 
     async def _check_permission(self, tool_name: str, params: dict[str, Any]) -> PermissionDecision:
         """Check permission, invoking callback for ASK decisions."""
-        decision = self._context.permissions.check(tool_name, params)
+        decision = self._context.permissions.check(
+            tool_name, params, registry=self._context.registry,
+        )
         if decision == PermissionDecision.ASK:
             if self._permission_callback is not None:
                 decision = await self._permission_callback(tool_name, params)
