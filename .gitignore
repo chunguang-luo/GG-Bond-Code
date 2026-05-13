@@ -6,6 +6,6 @@ __pycache__/
 claude-code-docs
 .claude
 node_modules/
-/package.json
 /package-lock.json
 gg-bond-code/frontend/node_modules/
+gg-bond-code/frontend/dist/

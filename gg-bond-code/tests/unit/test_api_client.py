@@ -5,7 +5,6 @@ from gg_bond_code.api.client import (
     get_model_family,
     _DEFAULT_TIMEOUT,
     _MAX_RETRIES,
-    _RETRY_DELAYS,
     _is_retryable,
 )
 
