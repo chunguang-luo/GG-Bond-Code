@@ -202,14 +202,7 @@ class REPL:
                     else:
                         result_summary = self._format_tool_result(event.tool_name, event.tool_result)
                         text_output.append(f"\n\n  ⎿  {result_summary}{elapsed}\n\n")
-                        detail_lines = event.tool_result.strip().splitlines()
-                        if len(detail_lines) > 1:
-                            text_output.append("```\n")
-                            for line in detail_lines[:8]:
-                                text_output.append(f"  {line}\n")
-                            if len(detail_lines) > 8:
-                                text_output.append(f"  … ({len(detail_lines)} lines total)\n")
-                            text_output.append("```\n")
+
 
                 elif event.type == "error":
                     text_output.append(f"\n\n**Error:** {event.content}")
