@@ -178,7 +178,7 @@ class REPL:
                         text_output.append(f"\n\n{event.tool_purpose}")
                     # Format: ⚙️ ToolName(key_param=value, ...)
                     tool_label = self._format_tool_label(event.tool_name, event.tool_input)
-                    text_output.append(f"\n\n⚙️ {tool_label}")
+                    text_output.append(f"\n\n - {tool_label}")
 
                     # Resume Live display after permission is handled
                     if self._live is not None:
