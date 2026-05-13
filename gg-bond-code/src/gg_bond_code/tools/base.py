@@ -99,13 +99,25 @@ class Tool(ABC):
 
 
 class ToolRegistry:
-    """Global tool registry — mirrors getAllBaseTools() in tools.ts."""
+    """Global tool registry — mirrors getAllBaseTools() in tools.ts.
+
+    Includes session-level schema cache to prevent tool definition byte
+    jitter across requests. Prompt Cache requires byte-consistency — if
+    a tool's schema changes between requests, the cached prefix breaks
+    from the tools section onward, invalidating all message-level cache.
+    """
 
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        # Key: (tool_name, family) — different API families have different formats
+        self._schema_cache: dict[tuple[str, str], dict[str, Any]] = {}
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
+        # Invalidate cache for this tool on re-registration
+        keys_to_remove = [k for k in self._schema_cache if k[0] == tool.name]
+        for k in keys_to_remove:
+            self._schema_cache.pop(k, None)
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
@@ -114,7 +126,28 @@ class ToolRegistry:
         return list(self._tools.values())
 
     def to_api_format(self, family: str = "openai") -> list[dict[str, Any]]:
-        return [tool.to_api_format(family) for tool in self._tools.values()]
+        """Convert all tools to API format with session-level schema caching.
+
+        Each tool's schema is serialized only once per (name, family) combo.
+        Subsequent calls return the cached dict, guaranteeing byte-consistency
+        for Prompt Cache hit rate.
+        """
+        result = []
+        for name, tool in self._tools.items():
+            cache_key = (name, family)
+            if cache_key not in self._schema_cache:
+                self._schema_cache[cache_key] = tool.to_api_format(family)
+            result.append(self._schema_cache[cache_key])
+        return result
+
+    def invalidate_schema_cache(self, tool_name: str | None = None) -> None:
+        """Invalidate schema cache for a tool, or all tools if None."""
+        if tool_name:
+            keys_to_remove = [k for k in self._schema_cache if k[0] == tool_name]
+            for k in keys_to_remove:
+                self._schema_cache.pop(k, None)
+        else:
+            self._schema_cache.clear()
 
 
 def create_default_registry() -> ToolRegistry:

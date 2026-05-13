@@ -302,6 +302,97 @@ Fork 子进程：[父线程历史] [fork 指令]
 
 **一个空格的差异就能让缓存失效，这就是手动控制的认知负担。**
 
+#### 防御措施详解：Tool Schema Cache
+
+工具定义（Tool Schema）位于 System Prompt 之后、消息历史之前。如果工具定义的字节在两次请求之间发生了变化，从 tools 开始后面的缓存全部失效——包括后面的消息历史缓存。
+
+```
+请求1: [system(缓存命中)] [tools: AAAAA] [messages(缓存命中)]
+                                  ↑
+                           字节: AAAAA
+
+请求2: [system(缓存命中)] [tools: AAAAB] [messages(???)]
+                                  ↑
+                           字节: AAAAB   ← 一个字节不同
+                                  ↑
+                           从 tools 开始缓存全部失效！
+                           之前命中的 messages 缓存也作废！
+```
+
+字节抖动的来源：
+
+1. **description 包含动态内容**：工具描述里拼接了当前时间、工作目录等，每次不同
+2. **字典序列化顺序不确定**：schema 里有未排序的子结构时，JSON 序列化可能不同
+3. **浮点数精度**：schema 里的 default 值如果包含浮点数，序列化结果可能有微小差异
+
+解决方案是 **Session 级缓存**——同一个 session 内，工具定义只序列化一次，之后永远复用同一份：
+
+```python
+class ToolRegistry:
+    def __init__(self):
+        self._tools = {}
+        self._schema_cache = {}  # session 级别，只算一次
+
+    def to_api_format(self, family="openai"):
+        result = []
+        for name, tool in self._tools.items():
+            if name not in self._schema_cache:
+                self._schema_cache[name] = tool.get_schema()  # 只序列化一次
+            result.append(self._schema_cache[name])           # 之后复用同一份
+        return result
+```
+
+同一个 session 内，`to_api_format()` 永远返回同一块内存的引用，字节不可能不同。
+
+#### 防御措施详解：Latch 锁存模式
+
+GrowthBook 等特性开关平台会在 session 中途更新实验分组，导致 `cache_control` 的 `scope` 或 `ttl` 字段变化：
+
+```
+T=0:00  用户开始对话
+        GrowthBook 返回: prompt_cache_1h = false
+        → cache_control = {"type": "ephemeral"}           ← 5 分钟 TTL
+
+T=2:00  第 2 轮请求
+        GrowthBook 返回: prompt_cache_1h = false         ← 没变
+        → cache_control = {"type": "ephemeral"}           ← 字节一致，缓存命中 ✓
+
+T=3:30  运营人员调整了 GrowthBook，用户被分到实验组
+        GrowthBook 返回: prompt_cache_1h = true           ← 变了！
+        → cache_control = {"type": "ephemeral", "ttl": "1h"}  ← 多了 "ttl":"1h"
+        字节不一致！缓存全部失效！❌
+```
+
+更糟糕的是来回翻转：
+
+```
+T=0  → ttl=false → {"type":"ephemeral"}              → 缓存建立
+T=3  → ttl=true  → {"type":"ephemeral","ttl":"1h"}   → 缓存失效！重新建立
+T=6  → ttl=false → {"type":"ephemeral"}              → 又失效！又重新建立
+T=9  → ttl=true  → {"type":"ephemeral","ttl":"1h"}   → 又失效！
+```
+
+Latch 模式的解决方式——首次读取后锁定，整个 session 内不再改变：
+
+```python
+class CacheControlConfig:
+    @property
+    def effective_scope(self):
+        if self._latched_scope is None:
+            self._latched_scope = self._scope  # 锁定！
+        return self._latched_scope              # 之后不再改变
+```
+
+```
+T=0  → 首次读取: ttl=false → latch 锁定 false
+T=3  → GrowthBook 说 ttl=true → 但 latch 锁住了，effective_ttl_1h 仍然 false
+        → cache_control = {"type": "ephemeral"}         → 字节不变，缓存命中 ✓
+T=6  → GrowthBook 说 ttl=true → latch 仍锁住
+        → cache_control = {"type": "ephemeral"}         → 继续命中 ✓
+```
+
+牺牲的是：用户虽然被分到了 1 小时 TTL 的实验组，但这个 session 内仍然用 5 分钟 TTL。代价很小（5 分钟对正常使用足够），换来的是缓存命中率正常。等 session 结束（`/clear` 或新对话），latch 重置，下个 session 就会用新的配置。
+
 ---
 
 ## 四、如何选择：不同场景下的缓存策略

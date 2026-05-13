@@ -319,11 +319,16 @@ def _get_anthropic_client() -> Any:
 async def _stream_anthropic_inner(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
-    system: str,
+    system: str | list[dict[str, Any]],
     model: str = "claude-sonnet-4-20250514",
     max_tokens: int = 8192,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Stream from Anthropic API. Yields normalized events."""
+    """Stream from Anthropic API. Yields normalized events.
+
+    Args:
+        system: Either a string (legacy) or a list of TextBlockParam dicts
+            with optional cache_control markers for prompt caching.
+    """
     client = _get_anthropic_client()
 
     kwargs: dict[str, Any] = {
@@ -345,8 +350,25 @@ async def _stream_anthropic_inner(
             elif event.type == "message_stop":
                 break
 
-        # Get the full message for tool use blocks (inside async with)
+        # Get the full message for tool use blocks and cache stats
         message = await stream.get_final_message()
+
+        # Emit cache statistics from API response
+        if hasattr(message, "usage") and message.usage:
+            yield {
+                "type": "cache_stats",
+                "stats": {
+                    "cache_creation_input_tokens": getattr(
+                        message.usage, "cache_creation_input_tokens", 0
+                    ),
+                    "cache_read_input_tokens": getattr(
+                        message.usage, "cache_read_input_tokens", 0
+                    ),
+                    "input_tokens": message.usage.input_tokens,
+                    "output_tokens": message.usage.output_tokens,
+                },
+            }
+
         for block in message.content:
             if block.type == "tool_use":
                 yield {
@@ -360,7 +382,7 @@ async def _stream_anthropic_inner(
 async def _stream_anthropic(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
-    system: str,
+    system: str | list[dict[str, Any]],
     model: str = "claude-sonnet-4-20250514",
     max_tokens: int = 8192,
 ) -> AsyncIterator[dict[str, Any]]:
@@ -408,7 +430,7 @@ async def stream_message(
         messages: List of message dictionaries with 'role' and 'content'.
         tools: List of tool definitions in Anthropic format.
         system: System prompt as string or list of sections. List format
-            supports static/dynamic boundary separation for future caching.
+            supports static/dynamic boundary separation for prompt caching.
         model: Model name (e.g., 'deepseek-chat', 'claude-sonnet-4-20250514').
         max_tokens: Maximum output tokens. Defaults to setting or 8192.
     """
@@ -425,20 +447,27 @@ async def stream_message(
     max_tokens = min(max_tokens, model_max)
 
     # Split system prompt into static/dynamic parts
-    static_blocks, dynamic_blocks = _split_system_prompt(system)
-
-    # Combine for API call
-    # TODO: When Anthropic API supports prompt cache with list[str],
-    # pass static and dynamic separately with cache_scope settings
-    combined_system = "\n\n".join(static_blocks + dynamic_blocks)
+    static_sections, dynamic_sections = _split_system_prompt(system)
 
     # Sanitize surrogates in messages before sending to API
     messages = _sanitize_surrogates(messages)
-    combined_system = _sanitize_surrogates(combined_system)
 
     if family == "anthropic":
-        async for evt in _stream_anthropic(messages, tools, combined_system, model, max_tokens):
+        # Build system prompt blocks with cache_control markers
+        from .cache import CacheControlConfig, CacheScope, build_system_prompt_blocks, add_cache_breakpoint_to_messages
+
+        config = CacheControlConfig(enabled=True, scope=CacheScope.ORG)
+        system_blocks = build_system_prompt_blocks(static_sections, dynamic_sections, config)
+        # Sanitize surrogates in system blocks
+        system_blocks = _sanitize_surrogates(system_blocks)
+        # Add cache breakpoint on last message
+        messages = add_cache_breakpoint_to_messages(messages, config)
+
+        async for evt in _stream_anthropic(messages, tools, system_blocks, model, max_tokens):
             yield evt
     else:
+        # OpenAI-compatible: no prompt cache support, merge as string
+        combined_system = "\n\n".join(static_sections + dynamic_sections)
+        combined_system = _sanitize_surrogates(combined_system)
         async for evt in _stream_openai(messages, tools, combined_system, model, max_tokens):
             yield evt
