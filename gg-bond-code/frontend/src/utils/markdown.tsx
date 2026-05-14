@@ -148,6 +148,7 @@ function renderBlockToken(token: Tokens.Generic, key: string): React.ReactNode {
 
     case "code": {
       const c = token as Tokens.Code;
+      const lines = c.text.split("\n");
 
       return (
         <Box key={key} flexDirection="column" marginTop={0} marginBottom={0}>
@@ -156,11 +157,14 @@ function renderBlockToken(token: Tokens.Generic, key: string): React.ReactNode {
               {"  "}{c.lang}
             </Text>
           )}
-          {c.text.split("\n").map((line, i) => (
-            <Text key={`${key}-line-${i}`} color="yellow">
-              {"  "}{line}
+          <Text dimColor>{"  ┌" + "─".repeat(72)}</Text>
+          {lines.map((line, i) => (
+            <Text key={`${key}-line-${i}`}>
+              <Text dimColor>{"  │ "}</Text>
+              <Text color="yellow">{line}</Text>
             </Text>
           ))}
+          <Text dimColor>{"  └" + "─".repeat(72)}</Text>
         </Box>
       );
     }

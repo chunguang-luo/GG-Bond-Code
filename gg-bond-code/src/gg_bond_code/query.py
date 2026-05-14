@@ -100,6 +100,26 @@ class QueryRunner:
         """Return the current loop state (transition log, turn count, etc.)."""
         return self._loop_state
 
+    @staticmethod
+    def _format_tool_labels(tool_blocks: list[dict[str, Any]]) -> str:
+        """Format tool names with key params for transition log detail."""
+        priority_keys = ["file_path", "path", "command", "pattern", "query", "url", "name"]
+        labels = []
+        for tb in tool_blocks:
+            name = tb.get("name", "?")
+            inp = tb.get("input", {})
+            if isinstance(inp, dict):
+                for key in priority_keys:
+                    if key in inp:
+                        val = str(inp[key])
+                        labels.append(f"{name}({val})")
+                        break
+                else:
+                    labels.append(name)
+            else:
+                labels.append(name)
+        return ", ".join(labels)
+
     async def run(self, user_message: str) -> AsyncIterator[QueryEvent]:
         """Run a single user message through the conversation loop."""
         ctx = self._context
@@ -349,7 +369,7 @@ class QueryRunner:
                             })
 
                     self._streaming_executor = None
-                    self._loop_state.set_transition(TransitionReason.TOOL_COMPLETED, detail=f"{len(completed)} tools")
+                    self._loop_state.set_transition(TransitionReason.TOOL_COMPLETED, detail=self._format_tool_labels(tool_use_blocks))
                 else:
                     # Serial mode: execute tools one by one with permission checks
                     if self.family == "anthropic":
@@ -411,7 +431,7 @@ class QueryRunner:
                                 "content": result.output,
                             })
 
-                    self._loop_state.set_transition(TransitionReason.TOOL_COMPLETED, detail=f"{len(tool_use_blocks)} tools (serial)")
+                    self._loop_state.set_transition(TransitionReason.TOOL_COMPLETED, detail=self._format_tool_labels(tool_use_blocks))
 
         finally:
             # Persist messages even if cancelled — use context's set_state

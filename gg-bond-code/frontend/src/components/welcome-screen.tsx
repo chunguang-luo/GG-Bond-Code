@@ -38,7 +38,7 @@ export function WelcomeScreen({ model, cwd }: WelcomeScreenProps) {
             {" (   ( )   )"}
           </Text>
           <Text bold color="magenta">
-            {"  \  ---  /"}
+            {"  \\  ---  /"}
           </Text>
           <Text> </Text>
           <Text bold>  Welcome back!</Text>
