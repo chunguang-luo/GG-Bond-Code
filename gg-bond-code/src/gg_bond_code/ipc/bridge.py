@@ -153,6 +153,20 @@ class IPCBridge:
             await self.transport.send_event("query.info", {"message": f"Current model: {model}"})
         elif cmd == "/context":
             await self._send_context_info()
+        elif cmd == "/help":
+            help_text = (
+                "Available commands:\n"
+                "  /help     - Show this help message\n"
+                "  /clear    - Clear conversation history\n"
+                "  /compact  - Compact conversation to save context\n"
+                "  /thinking - Toggle thinking display\n"
+                "  /model    - Show current model\n"
+                "  /context   - Show context window usage\n"
+                "  /exit     - Exit the session"
+            )
+            await self.transport.send_event("query.info", {"message": help_text})
+        else:
+            await self.transport.send_event("query.info", {"message": f"Unknown command: {command}"})
 
     # ── Query execution ────────────────────────────────────────────────────
 

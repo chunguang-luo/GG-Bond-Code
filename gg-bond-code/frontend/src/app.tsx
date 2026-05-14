@@ -275,7 +275,56 @@ export function App({ transport }: AppProps) {
         }
 
         case CoreToInk.CONTEXT_INFO: {
-          // TODO: render context bar
+          const info = msg.payload as {
+            model?: string;
+            tokenUsage?: number;
+            effectiveWindow?: number;
+            warningState?: string;
+            percentLeft?: number;
+          };
+          const pctUsed = info.percentLeft != null ? Math.round(100 - info.percentLeft) : 0;
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextId(),
+              type: "info",
+              content: `Context: ${pctUsed}% used (${info.tokenUsage ?? 0} tokens) — ${info.warningState ?? "ok"}`,
+            },
+          ]);
+          break;
+        }
+
+        case CoreToInk.QUERY_INFO: {
+          const infoMsg = (msg.payload as { message?: string }).message || "";
+          if (infoMsg) {
+            setMessages((prev) => [
+              ...prev,
+              { id: nextId(), type: "info", content: infoMsg },
+            ]);
+          }
+          break;
+        }
+
+        case CoreToInk.QUERY_CLEARED: {
+          setMessages([]);
+          currentTextRef.current = "";
+          break;
+        }
+
+        case CoreToInk.COMPACT_STARTED: {
+          setMessages((prev) => [
+            ...prev,
+            { id: nextId(), type: "info", content: "Compacting conversation..." },
+          ]);
+          break;
+        }
+
+        case CoreToInk.COMPACT_COMPLETE: {
+          const reason = (msg.payload as { reason?: string }).reason || "done";
+          setMessages((prev) => [
+            ...prev,
+            { id: nextId(), type: "info", content: `Compact complete: ${reason}` },
+          ]);
           break;
         }
 

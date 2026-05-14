@@ -23,6 +23,8 @@ export const CoreToInk = {
   QUERY_ERROR: "query.error",
   QUERY_WARNING: "query.warning",
   QUERY_COMPLETE: "query.complete",
+  QUERY_INFO: "query.info",
+  QUERY_CLEARED: "query.cleared",
 
   // State sync
   STATE_UPDATE: "state.update",

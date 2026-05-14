@@ -10,7 +10,7 @@ import { Markdown, StreamingMarkdown } from "../utils/markdown";
 
 export interface DisplayMessage {
   id: string;
-  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system";
+  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system" | "info";
   content: string;
   toolName?: string;
   toolInput?: Record<string, unknown>;
@@ -59,6 +59,13 @@ function MessageItem({ msg }: { msg: DisplayMessage }) {
       return (
         <Box marginTop={1}>
           <Markdown>{msg.content}</Markdown>
+        </Box>
+      );
+
+    case "info":
+      return (
+        <Box marginTop={0} marginLeft={2}>
+          <Text dimColor>{msg.content}</Text>
         </Box>
       );
 
