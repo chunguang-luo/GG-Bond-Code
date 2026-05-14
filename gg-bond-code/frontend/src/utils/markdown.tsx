@@ -81,6 +81,34 @@ function renderInlineTokens(
   return elements;
 }
 
+/**
+ * Split a list item's tokens into inline tokens (text, strong, em, codespan, etc.)
+ * and block tokens (nested list, blockquote, code, etc.).
+ *
+ * marked puts them all in item.tokens, but inline and block tokens
+ * need different rendering paths.
+ */
+function splitItemTokens(tokens: Tokens.Generic[]): {
+  inlineTokens: Tokens.Generic[];
+  blockTokens: Tokens.Generic[];
+} {
+  const inlineTokens: Tokens.Generic[] = [];
+  const blockTokens: Tokens.Generic[] = [];
+
+  // Block-level token types that can appear inside a list item
+  const blockTypes = new Set(["list", "blockquote", "code", "heading", "hr", "table"]);
+
+  for (const t of tokens) {
+    if (blockTypes.has(t.type)) {
+      blockTokens.push(t);
+    } else {
+      inlineTokens.push(t);
+    }
+  }
+
+  return { inlineTokens, blockTokens };
+}
+
 // ── Block token rendering ────────────────────────────────────────────────────
 
 /** Render a single block-level token */
@@ -144,10 +172,20 @@ function renderBlockToken(token: Tokens.Generic, key: string): React.ReactNode {
         <Box key={key} flexDirection="column" marginLeft={2}>
           {list.items.map((item, i) => {
             const bullet = list.ordered ? `${(list.start ?? 1) + i}. ` : "• ";
+            // Split item.tokens into inline (text, strong, em, codespan...)
+            // and block (nested list, blockquote...) groups for proper rendering
+            const { inlineTokens, blockTokens } = splitItemTokens(item.tokens);
             return (
-              <Box key={`${key}-item-${i}`}>
-                <Text dimColor>{bullet}</Text>
-                <Text>{renderInlineTokens(item.tokens, `${key}-item-${i}`)}</Text>
+              <Box key={`${key}-item-${i}`} flexDirection="column">
+                <Box>
+                  <Text dimColor>{bullet}</Text>
+                  <Text>{renderInlineTokens(inlineTokens, `${key}-item-${i}`)}</Text>
+                </Box>
+                {blockTokens.length > 0 && (
+                  <Box marginLeft={2} flexDirection="column">
+                    {renderBlockTokens(blockTokens, `${key}-item-${i}-block`)}
+                  </Box>
+                )}
               </Box>
             );
           })}
