@@ -28,9 +28,20 @@ function renderInlineTokens(
     const key = `${keyPrefix}-${i}`;
 
     switch (t.type) {
-      case "text":
-        elements.push(<Text key={key}>{(t as Tokens.Text).text}</Text>);
+      case "text": {
+        // Tokens.Text may have sub-tokens (strong, em, codespan) when inside
+        // list items or other block contexts. Use them if available, otherwise
+        // fall back to plain .text.
+        const textToken = t as Tokens.Text;
+        if (textToken.tokens && textToken.tokens.length > 0) {
+          elements.push(
+            <Text key={key}>{renderInlineTokens(textToken.tokens, key)}</Text>
+          );
+        } else {
+          elements.push(<Text key={key}>{textToken.text}</Text>);
+        }
         break;
+      }
 
       case "strong":
         elements.push(
