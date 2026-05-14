@@ -64,6 +64,11 @@ class IPCBridge:
         # Track if a query is running
         self._query_task: asyncio.Task | None = None
 
+        # Command dispatcher
+        from ..commands import create_builtin_registry, CommandDispatcher
+        self._command_registry = create_builtin_registry()
+        self._command_dispatcher = CommandDispatcher(self._command_registry)
+
         # Register message handler
         self.transport.on_message(self._handle_message)
 
@@ -116,18 +121,31 @@ class IPCBridge:
             self._query_task.cancel()
 
     async def _handle_command(self, command: str) -> None:
-        """Handle a slash command from Ink."""
+        """Handle a slash command from Ink via the dispatcher."""
+        from ..commands.types import CommandContext, ResultType
         from ..context.system import clear_system_context_cache
-        from ..compact.manager import CompactManager, CompactLevel
 
         store = Store()
-        cmd = command.strip().lower()
+        context = CommandContext(
+            model=self.model,
+            store_get=store.get,
+            store_set=store.set,
+            loop_state=self._runner.loop_state,
+            clear_system_context_cache=clear_system_context_cache,
+            registry=self._command_registry,
+        )
 
-        if cmd in ("/exit", "/quit", "/q"):
-            await self.transport.send_event(CoreToInk.SESSION_SHUTDOWN, {"reason": "user exit"})
-        elif cmd == "/clear":
-            clear_system_context_cache()
-            store.set("messages", [])
+        # For /compact, send compact.started before dispatch
+        cmd_name = command.strip().lower().split()[0]
+        if cmd_name == "/compact":
+            await self.transport.send_event(CoreToInk.COMPACT_STARTED, {"level": "full"})
+
+        result = await self._command_dispatcher.dispatch(command, context)
+
+        # Interpret result for IPC output
+        if result.type == ResultType.TEXT:
+            await self.transport.send_event("query.info", {"message": result.content["message"]})
+        elif result.type == ResultType.CLEAR:
             self._context = create_store_context()
             self._runner = QueryRunner(
                 model=self.model,
@@ -136,63 +154,17 @@ class IPCBridge:
                 enable_streaming_tools=True,
             )
             await self.transport.send_event("query.cleared", {})
-        elif cmd == "/compact":
-            clear_system_context_cache()
-            await self.transport.send_event(CoreToInk.COMPACT_STARTED, {"level": "full"})
-            messages = store.get("messages", [])
-            if messages:
-                manager = CompactManager(model=self.model or store.get("model", "deepseek-chat"))
-                compacted, reason = await manager.execute(CompactLevel.FULL, messages)
-                store.set("messages", compacted)
-                await self.transport.send_event(CoreToInk.COMPACT_COMPLETE, {"reason": reason})
-        elif cmd == "/thinking":
-            current = store.get("ui.show_thinking", False)
-            store.set("ui.show_thinking", not current)
-        elif cmd == "/model":
-            model = store.get("model", "unknown")
-            await self.transport.send_event("query.info", {"message": f"Current model: {model}"})
-        elif cmd == "/context":
-            await self._send_context_info()
-        elif cmd == "/help":
-            help_text = (
-                "Available commands:\n"
-                "  /help     - Show this help message\n"
-                "  /clear    - Clear conversation history\n"
-                "  /compact  - Compact conversation to save context\n"
-                "  /thinking - Toggle thinking display\n"
-                "  /model    - Show current model\n"
-                "  /context   - Show context window usage\n"
-                "  /exit     - Exit the session"
-            )
-            await self.transport.send_event("query.info", {"message": help_text})
-        else:
-            similar = self._find_similar_command(cmd)
-            hint = f"Unknown command: {command}"
-            if similar:
-                hint += f"\nDid you mean: {similar}?"
+        elif result.type == ResultType.SHUTDOWN:
+            await self.transport.send_event(CoreToInk.SESSION_SHUTDOWN, result.content)
+        elif result.type == ResultType.CONTEXT_INFO:
+            await self.transport.send_event(CoreToInk.CONTEXT_INFO, result.content)
+        elif result.type == ResultType.COMPACT_COMPLETE:
+            await self.transport.send_event(CoreToInk.COMPACT_COMPLETE, result.content)
+        elif result.type == ResultType.UNKNOWN_COMMAND:
+            hint = f"Unknown command: {result.content['command']}"
+            if result.content.get("suggestion"):
+                hint += f"\nDid you mean: {result.content['suggestion']}?"
             await self.transport.send_event("query.info", {"message": hint})
-
-    def _find_similar_command(self, cmd: str) -> str | None:
-        """Find similar command suggestion using prefix matching."""
-        valid_commands = ["/help", "/clear", "/compact", "/context", "/thinking", "/model", "/log", "/exit", "/quit", "/q"]
-        best_match = None
-        best_score = 0
-
-        for valid_cmd in valid_commands:
-            score = 0
-            min_len = min(len(cmd), len(valid_cmd))
-            for i in range(min_len):
-                if cmd[i] == valid_cmd[i]:
-                    score += 1
-                else:
-                    break
-            if len(cmd) == len(valid_cmd):
-                score += 1
-            if score > best_score and score >= 2:
-                best_score = score
-                best_match = valid_cmd
-
-        return best_match
 
     # ── Query execution ────────────────────────────────────────────────────
 
@@ -314,43 +286,6 @@ class IPCBridge:
             future.set_result(PermissionDecision.ALLOW)
         else:
             future.set_result(PermissionDecision.DENY)
-
-    # ── Context info ───────────────────────────────────────────────────────
-
-    async def _send_context_info(self) -> None:
-        """Send context window info to Ink."""
-        from ..api.models import get_model_spec
-        from ..compact.budget import (
-            estimate_token_count,
-            get_effective_context_window,
-            get_auto_compact_threshold,
-            calculate_token_warning_state,
-        )
-
-        store = Store()
-        model = self.model or store.get("model", "deepseek-chat")
-        spec = get_model_spec(model)
-        messages = store.get("messages", [])
-        token_usage = estimate_token_count(messages)
-        effective = get_effective_context_window(model)
-        threshold = get_auto_compact_threshold(model)
-        warning_state = calculate_token_warning_state(token_usage, model)
-
-        await self.transport.send_event(CoreToInk.CONTEXT_INFO.value, {
-            "model": model,
-            "contextWindow": spec.context_window,
-            "maxOutputTokens": spec.max_output_tokens,
-            "tokenUsage": token_usage,
-            "effectiveWindow": effective,
-            "autoCompactThreshold": threshold,
-            "blockingAt": effective - 3000,
-            "messageCount": len(messages),
-            "warningState": ("blocking" if warning_state.is_at_blocking
-                             else "auto_compact" if warning_state.is_above_auto_compact
-                             else "warning" if warning_state.is_above_warning
-                             else "ok"),
-            "percentLeft": warning_state.percent_left,
-        })
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 

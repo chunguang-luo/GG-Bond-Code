@@ -32,6 +32,8 @@ class CoreToInk(str, Enum):
     QUERY_ERROR = "query.error"
     QUERY_WARNING = "query.warning"
     QUERY_COMPLETE = "query.complete"
+    QUERY_INFO = "query.info"
+    QUERY_CLEARED = "query.cleared"
 
     # State synchronization
     STATE_UPDATE = "state.update"

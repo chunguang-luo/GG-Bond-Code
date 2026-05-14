@@ -31,6 +31,11 @@ class REPL:
         self._current_task: asyncio.Task | None = None  # track running query task
         self._live: Live | None = None  # reference to current Live instance for permission prompts
 
+        # Command dispatcher
+        from .commands import create_builtin_registry, CommandDispatcher
+        self._command_registry = create_builtin_registry()
+        self._command_dispatcher = CommandDispatcher(self._command_registry)
+
     # ── UI preference accessors (backed by Store) ─────────────────────
 
     @property
@@ -246,83 +251,53 @@ class REPL:
             # Live with transient=False keeps content after exit, so no need to reprint
 
     async def _handle_command(self, command: str) -> bool:
-        """Handle slash commands. Returns True if should continue REPL."""
-        cmd = command.strip().lower()
-        store = Store()
+        """Handle slash commands via the dispatcher. Returns True if should continue REPL."""
+        from .commands.types import CommandContext, ResultType
 
-        if cmd in ("/exit", "/quit", "/q"):
-            self.running = False
-            return False
-        elif cmd == "/clear":
-            clear_system_context_cache()  # Clear system context cache
-            store.set("messages", [])
+        store = Store()
+        context = CommandContext(
+            model=self.model,
+            store_get=store.get,
+            store_set=store.set,
+            loop_state=self.runner.loop_state,
+            clear_system_context_cache=clear_system_context_cache,
+            registry=self._command_registry,
+        )
+
+        # For /compact, print "Compacting..." before dispatch
+        cmd_name = command.strip().lower().split()[0]
+        if cmd_name == "/compact":
+            self.console.print("[dim]Compacting conversation...[/dim]")
+
+        result = await self._command_dispatcher.dispatch(command, context)
+
+        # Interpret result for Rich output
+        if result.type == ResultType.TEXT:
+            self.console.print(result.content["message"])
+        elif result.type == ResultType.CLEAR:
             self._context = create_store_context()
-            self.runner = QueryRunner(model=self.model, permission_callback=self._ask_permission, context=self._context, enable_streaming_tools=True)
+            self.runner = QueryRunner(
+                model=self.model,
+                permission_callback=self._ask_permission,
+                context=self._context,
+                enable_streaming_tools=True,
+            )
             self.console.clear()
             self._print_welcome()
+        elif result.type == ResultType.SHUTDOWN:
+            self.running = False
             return False
-        elif cmd == "/thinking":
-            self.show_thinking = not self.show_thinking
-            state = "ON" if self.show_thinking else "OFF"
-            self.console.print(f"Thinking display: [green]{state}[/green]")
-            return False
-        elif cmd == "/help":
-            self._print_help()
-            return False
-        elif cmd == "/compact":
-            clear_system_context_cache()  # Clear system context cache
-            self.console.print("[dim]Compacting conversation...[/dim]")
-            messages = store.get("messages", [])
-            if messages:
-                from .compact.manager import CompactManager, CompactLevel
-                manager = CompactManager(model=self.model or store.get("model", "deepseek-chat"))
-                # Force FULL level for manual /compact
-                compacted, reason = await manager.execute(CompactLevel.FULL, messages)
-                store.set("messages", compacted)
-                self.console.print(f"[green]Compacted: {reason}[/green]")
-            return False
-        elif cmd == "/model":
-            self.console.print(f"Current model: {store.get('model', 'unknown')}")
-            return False
-        elif cmd == "/context":
-            self._print_context_info(store)
-            return False
-        elif cmd == "/log":
-            self._print_transition_log()
-            return False
-        else:
-            self.console.print(f"Unknown command: {cmd}", style="yellow")
-            # Suggest similar commands
-            similar = self._find_similar_command(cmd)
-            if similar:
-                self.console.print(f"Did you mean: [green]{similar}[/green]?")
-            return False
+        elif result.type == ResultType.CONTEXT_INFO:
+            self._render_context_info(result.content)
+        elif result.type == ResultType.COMPACT_COMPLETE:
+            self.console.print(f"[green]Compacted: {result.content['reason']}[/green]")
+        elif result.type == ResultType.UNKNOWN_COMMAND:
+            hint = f"Unknown command: {result.content['command']}"
+            if result.content.get("suggestion"):
+                hint += f"\nDid you mean: [green]{result.content['suggestion']}[/green]?"
+            self.console.print(hint, style="yellow")
 
-    def _find_similar_command(self, cmd: str) -> str | None:
-        """Find similar command suggestion using simple string similarity."""
-        valid_commands = ["/help", "/clear", "/compact", "/context", "/thinking", "/model", "/log", "/exit", "/quit", "/q"]
-        best_match = None
-        best_score = 0
-
-        for valid_cmd in valid_commands:
-            # Simple similarity: count matching characters at start
-            score = 0
-            min_len = min(len(cmd), len(valid_cmd))
-            for i in range(min_len):
-                if cmd[i] == valid_cmd[i]:
-                    score += 1
-                else:
-                    break
-
-            # Bonus for same length
-            if len(cmd) == len(valid_cmd):
-                score += 1
-
-            if score > best_score and score >= 2:  # At least 2 matching chars
-                best_score = score
-                best_match = valid_cmd
-
-        return best_match
+        return False
 
     def _print_welcome(self) -> None:
         store = Store()
@@ -392,53 +367,47 @@ class REPL:
             )
         )
 
-    def _print_context_info(self, store: Store) -> None:
-        """Print context window details for the current model."""
-        from .api.models import get_model_spec
-        from .compact.budget import (
-            estimate_token_count,
-            get_effective_context_window,
-            get_auto_compact_threshold,
-            calculate_token_warning_state,
-        )
-
-        model = self.model or store.get("model", "deepseek-chat")
-        spec = get_model_spec(model)
-        messages = store.get("messages", [])
-        token_usage = estimate_token_count(messages)
-        effective = get_effective_context_window(model)
-        threshold = get_auto_compact_threshold(model)
-        warning_state = calculate_token_warning_state(token_usage, model)
-
+    def _render_context_info(self, data: dict) -> None:
+        """Render context info using Rich formatting from a data dict."""
+        token_usage = data.get("tokenUsage", 0)
+        effective = data.get("effectiveWindow", 1)
         used_pct = round((token_usage / effective) * 100) if effective > 0 else 0
         bar_len = 30
         filled = min(bar_len, round(bar_len * token_usage / effective)) if effective > 0 else 0
         bar = "█" * filled + "░" * (bar_len - filled)
 
-        # Determine color based on warning state
-        if warning_state.is_at_blocking:
+        warning_state_str = data.get("warningState", "ok")
+        if warning_state_str == "blocking":
             bar_color = "red"
-        elif warning_state.is_above_auto_compact:
-            bar_color = "yellow"
-        elif warning_state.is_above_warning:
+        elif warning_state_str in ("auto_compact", "warning"):
             bar_color = "yellow"
         else:
             bar_color = "green"
 
+        model = data.get("model", "unknown")
+        context_window = data.get("contextWindow", 0)
+        max_output = data.get("maxOutputTokens", 0)
+        threshold = data.get("autoCompactThreshold", 0)
+        blocking_at = data.get("blockingAt", 0)
+        message_count = data.get("messageCount", 0)
+        percent_left = data.get("percentLeft", 100)
+
+        state_icon = {"blocking": "🔴 Blocking", "auto_compact": "🟡 Auto-Compact", "warning": "🟡 Warning"}.get(warning_state_str, "🟢 OK")
+
         lines = [
             f"[bold]Model[/bold]:           {model}",
-            f"[bold]Context Window[/bold]:   {spec.context_window:,} tokens",
-            f"[bold]Max Output[/bold]:       {spec.max_output_tokens:,} tokens",
+            f"[bold]Context Window[/bold]:   {context_window:,} tokens",
+            f"[bold]Max Output[/bold]:       {max_output:,} tokens",
             f"[bold]Effective Window[/bold]: {effective:,} tokens",
-            f"[bold]Auto-Compact at[/bold]:  {threshold:,} tokens ({round(threshold / effective * 100)}% of effective)",
-            f"[bold]Blocking at[/bold]:      {effective - 3000:,} tokens",
+            f"[bold]Auto-Compact at[/bold]:  {threshold:,} tokens ({round(threshold / effective * 100) if effective else 0}% of effective)",
+            f"[bold]Blocking at[/bold]:      {blocking_at:,} tokens",
             "",
             f"[bold]Token Usage[/bold]:      {token_usage:,} / {effective:,} ({used_pct}%)",
             f"                    [{bar_color}]{bar}[/{bar_color}] {used_pct}%",
-            f"[bold]Messages[/bold]:         {len(messages)}",
+            f"[bold]Messages[/bold]:         {message_count}",
             "",
-            f"[bold]Warning State[/bold]:    {'🔴 Blocking' if warning_state.is_at_blocking else '🟡 Auto-Compact' if warning_state.is_above_auto_compact else '🟡 Warning' if warning_state.is_above_warning else '🟢 OK'}",
-            f"[bold]Percent Left[/bold]:     {warning_state.percent_left}%",
+            f"[bold]Warning State[/bold]:    {state_icon}",
+            f"[bold]Percent Left[/bold]:     {percent_left}%",
         ]
 
         self.console.print(
@@ -446,22 +415,6 @@ class REPL:
                 "\n".join(lines),
                 title="Context Window",
                 border_style=bar_color,
-            )
-        )
-
-    def _print_help(self) -> None:
-        self.console.print(
-            Panel(
-                "/help     - Show this help\n"
-                "/clear    - Clear conversation\n"
-                "/compact  - Compact conversation history\n"
-                "/context  - Show context window details\n"
-                "/thinking - Toggle thinking display\n"
-                "/model    - Show current model\n"
-                "/log      - Show last query transition log\n"
-                "/exit     - Exit the REPL",
-                title="Commands",
-                border_style="green",
             )
         )
 
