@@ -110,11 +110,6 @@ function renderBlockToken(token: Tokens.Generic, key: string): React.ReactNode {
     case "code": {
       const c = token as Tokens.Code;
 
-      // Mermaid diagram
-      if (c.lang === "mermaid") {
-        return <MermaidBlock key={key} text={c.text} />;
-      }
-
       return (
         <Box key={key} flexDirection="column" marginTop={0} marginBottom={0}>
           {c.lang && (
@@ -257,121 +252,6 @@ function renderBlockTokens(tokens: Tokens.Generic[], keyPrefix: string): React.R
     if (el !== null) elements.push(el);
   }
   return elements;
-}
-
-// ── Mermaid diagram renderer ──────────────────────────────────────────────────
-
-/**
- * Render a Mermaid diagram in the terminal.
- *
- * Since terminals can't render SVG, we display a simplified ASCII representation:
- * - Parse flowchart/sequence diagram structure
- * - Render nodes and edges as ASCII art
- * - Fallback: show the Mermaid source as a styled code block
- */
-function MermaidBlock({ text }: { text: string }) {
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-
-  const nodes = new Map<string, string>();
-  const edges: Array<{ from: string; to: string; label?: string }> = [];
-  let direction = "TD";
-
-  for (const line of lines) {
-    const dirMatch = line.match(/^graph\s+(TD|LR|RL|BT|TB)$/i);
-    if (dirMatch) { direction = dirMatch[1].toUpperCase(); continue; }
-
-    if (line.match(/^sequenceDiagram/i)) {
-      return renderMermaidFallback(text);
-    }
-
-    // Edge: A -->|label| B
-    const edgeLabel = line.match(/^([A-Za-z0-9_]+)\s*--+>\|([^|]+)\|\s*([A-Za-z0-9_]+)/);
-    if (edgeLabel) {
-      edges.push({ from: edgeLabel[1], to: edgeLabel[3], label: edgeLabel[2] });
-      if (!nodes.has(edgeLabel[1])) nodes.set(edgeLabel[1], edgeLabel[1]);
-      if (!nodes.has(edgeLabel[3])) nodes.set(edgeLabel[3], edgeLabel[3]);
-      continue;
-    }
-
-    // Edge: A --> B
-    const edgePlain = line.match(/^([A-Za-z0-9_]+)\s*--+>\s*([A-Za-z0-9_]+)/);
-    if (edgePlain) {
-      edges.push({ from: edgePlain[1], to: edgePlain[2] });
-      if (!nodes.has(edgePlain[1])) nodes.set(edgePlain[1], edgePlain[1]);
-      if (!nodes.has(edgePlain[2])) nodes.set(edgePlain[2], edgePlain[2]);
-      continue;
-    }
-
-    // Edge: A ---|label| B (undirected)
-    const undirLabel = line.match(/^([A-Za-z0-9_]+)\s*---+\|([^|]+)\|\s*([A-Za-z0-9_]+)/);
-    if (undirLabel) {
-      edges.push({ from: undirLabel[1], to: undirLabel[3], label: undirLabel[2] });
-      if (!nodes.has(undirLabel[1])) nodes.set(undirLabel[1], undirLabel[1]);
-      if (!nodes.has(undirLabel[3])) nodes.set(undirLabel[3], undirLabel[3]);
-      continue;
-    }
-
-    // Edge: A --- B (undirected)
-    const undirPlain = line.match(/^([A-Za-z0-9_]+)\s*---+\s*([A-Za-z0-9_]+)/);
-    if (undirPlain) {
-      edges.push({ from: undirPlain[1], to: undirPlain[2] });
-      if (!nodes.has(undirPlain[1])) nodes.set(undirPlain[1], undirPlain[1]);
-      if (!nodes.has(undirPlain[2])) nodes.set(undirPlain[2], undirPlain[2]);
-      continue;
-    }
-
-    // Node definitions: A[label], A(label), A{label}
-    const nodeSquare = line.match(/^([A-Za-z0-9_]+)\[([^\]]+)\]$/);
-    if (nodeSquare) { nodes.set(nodeSquare[1], nodeSquare[2]); continue; }
-
-    const nodeRound = line.match(/^([A-Za-z0-9_]+)\(([^)]+)\)$/);
-    if (nodeRound) { nodes.set(nodeRound[1], nodeRound[2]); continue; }
-
-    const nodeDiamond = line.match(/^([A-Za-z0-9_]+)\{([^}]+)\}$/);
-    if (nodeDiamond) { nodes.set(nodeDiamond[1], nodeDiamond[2]); continue; }
-  }
-
-  if (edges.length > 0) {
-    const edgeLines: React.ReactNode[] = [];
-    for (let i = 0; i < edges.length; i++) {
-      const e = edges[i];
-      const fromLabel = nodes.get(e.from) || e.from;
-      const toLabel = nodes.get(e.to) || e.to;
-      const arrow = " ──▶ ";
-      const labelText = e.label ? ` [${e.label}]` : "";
-
-      edgeLines.push(
-        <Box key={`edge-${i}`}>
-          <Text color="magenta">{"  "}{fromLabel}</Text>
-          <Text color="gray">{arrow}</Text>
-          {labelText && <Text color="cyan">{labelText}</Text>}
-          <Text color="magenta">{toLabel}</Text>
-        </Box>
-      );
-    }
-
-    return (
-      <Box flexDirection="column" marginTop={0} marginBottom={0}>
-        <Text bold color="magenta">{"  ◈ Mermaid"}</Text>
-        {edgeLines}
-      </Box>
-    );
-  }
-
-  return renderMermaidFallback(text);
-}
-
-function renderMermaidFallback(text: string) {
-  return (
-    <Box flexDirection="column" marginTop={0} marginBottom={0}>
-      <Text bold color="magenta">{"  ◈ Mermaid"}</Text>
-      {text.split("\n").map((line, i) => (
-        <Text key={`mmd-${i}`} color="magenta" dimColor>
-          {"  "}{line}
-        </Text>
-      ))}
-    </Box>
-  );
 }
 
 // ── Sanitize incomplete streaming Markdown ─────────────────────────────────────

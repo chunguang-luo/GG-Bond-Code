@@ -36,13 +36,11 @@ export function InputBar({ inputValue, setInputValue, onSubmit, disabled, model 
   return (
     <Box borderStyle="single" borderColor="green" paddingLeft={1} paddingRight={1}>
       <Text color="green" bold>
-        ggbond{" "}
+        {"ggbond "}
       </Text>
       <Text color="gray">{"❯ "}</Text>
-      <Text>
-        {inputValue}
-        {!disabled && <Text backgroundColor="green"> </Text>}
-      </Text>
+      <Text>{inputValue}</Text>
+      {!disabled && <Text backgroundColor="green">{" "}</Text>}
       {disabled && (
         <Text dimColor> thinking...</Text>
       )}
