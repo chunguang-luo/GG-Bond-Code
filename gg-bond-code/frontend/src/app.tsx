@@ -275,21 +275,47 @@ export function App({ transport }: AppProps) {
         }
 
         case CoreToInk.CONTEXT_INFO: {
-          const info = msg.payload as {
+          const ctx = msg.payload as {
             model?: string;
+            contextWindow?: number;
+            maxOutputTokens?: number;
             tokenUsage?: number;
             effectiveWindow?: number;
+            autoCompactThreshold?: number;
+            blockingAt?: number;
+            messageCount?: number;
             warningState?: string;
             percentLeft?: number;
           };
-          const pctUsed = info.percentLeft != null ? Math.round(100 - info.percentLeft) : 0;
+          const usage = ctx.tokenUsage ?? 0;
+          const effective = ctx.effectiveWindow ?? 1;
+          const usedPct = effective > 0 ? Math.round((usage / effective) * 100) : 0;
+          const barLen = 30;
+          const filled = effective > 0 ? Math.min(barLen, Math.round(barLen * usage / effective)) : 0;
+          const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
+          const stateIcon = ctx.warningState === "blocking" ? "🔴" : ctx.warningState === "auto_compact" ? "🟡" : ctx.warningState === "warning" ? "🟡" : "🟢";
+          const stateLabel = ctx.warningState === "blocking" ? "Blocking" : ctx.warningState === "auto_compact" ? "Auto-Compact" : ctx.warningState === "warning" ? "Warning" : "OK";
+          const fmt = (n: number) => n.toLocaleString();
+
+          const lines = [
+            `Model:           ${ctx.model ?? "unknown"}`,
+            `Context Window:   ${fmt(ctx.contextWindow ?? 0)} tokens`,
+            `Max Output:       ${fmt(ctx.maxOutputTokens ?? 0)} tokens`,
+            `Effective Window: ${fmt(effective)} tokens`,
+            `Auto-Compact at:  ${fmt(ctx.autoCompactThreshold ?? 0)} tokens (${ctx.autoCompactThreshold && effective ? Math.round(ctx.autoCompactThreshold / effective * 100) : 0}% of effective)`,
+            `Blocking at:      ${fmt(ctx.blockingAt ?? 0)} tokens`,
+            ``,
+            `Token Usage:      ${fmt(usage)} / ${fmt(effective)} (${usedPct}%)`,
+            `                  ${bar} ${usedPct}%`,
+            `Messages:         ${ctx.messageCount ?? 0}`,
+            ``,
+            `Warning State:    ${stateIcon} ${stateLabel}`,
+            `Percent Left:     ${ctx.percentLeft ?? 100}%`,
+          ];
+
           setMessages((prev) => [
             ...prev,
-            {
-              id: nextId(),
-              type: "info",
-              content: `Context: ${pctUsed}% used (${info.tokenUsage ?? 0} tokens) — ${info.warningState ?? "ok"}`,
-            },
+            { id: nextId(), type: "info", content: lines.join("\n") },
           ]);
           break;
         }
