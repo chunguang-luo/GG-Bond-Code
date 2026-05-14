@@ -47,16 +47,20 @@ function formatToolResult(result: string): string {
 function MessageItem({ msg }: { msg: DisplayMessage }) {
   switch (msg.type) {
     case "system":
-      // User's question — Claude Code style
+      // User's question — gray background, separated from answer
       return (
-        <Box marginTop={1}>
-          <Text color="green" bold>{"> "} </Text>
-          <Text color="green">{msg.content}</Text>
+        <Box marginTop={1} marginBottom={0}>
+          <Text backgroundColor="gray" color="white" bold>{"> "}</Text>
+          <Text backgroundColor="gray" color="white">{" " + msg.content + " "}</Text>
         </Box>
       );
 
     case "text":
-      return <Markdown>{msg.content}</Markdown>;
+      return (
+        <Box marginTop={1}>
+          <Markdown>{msg.content}</Markdown>
+        </Box>
+      );
 
     case "thinking":
       return (
