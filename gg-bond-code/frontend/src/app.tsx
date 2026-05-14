@@ -378,6 +378,11 @@ export function App({ transport }: AppProps) {
   const handleSubmit = useCallback(
     (text: string) => {
       if (text.startsWith("/")) {
+        // Show the command in message list, then send to backend
+        setMessages((prev) => [
+          ...prev,
+          { id: nextId(), type: "command", content: text },
+        ]);
         transport.sendEvent(InkToCore.USER_COMMAND, { command: text });
         if (text.toLowerCase() === "/exit" || text.toLowerCase() === "/quit") {
           exit();

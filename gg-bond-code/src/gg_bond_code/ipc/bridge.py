@@ -166,7 +166,33 @@ class IPCBridge:
             )
             await self.transport.send_event("query.info", {"message": help_text})
         else:
-            await self.transport.send_event("query.info", {"message": f"Unknown command: {command}"})
+            similar = self._find_similar_command(cmd)
+            hint = f"Unknown command: {command}"
+            if similar:
+                hint += f"\nDid you mean: {similar}?"
+            await self.transport.send_event("query.info", {"message": hint})
+
+    def _find_similar_command(self, cmd: str) -> str | None:
+        """Find similar command suggestion using prefix matching."""
+        valid_commands = ["/help", "/clear", "/compact", "/context", "/thinking", "/model", "/log", "/exit", "/quit", "/q"]
+        best_match = None
+        best_score = 0
+
+        for valid_cmd in valid_commands:
+            score = 0
+            min_len = min(len(cmd), len(valid_cmd))
+            for i in range(min_len):
+                if cmd[i] == valid_cmd[i]:
+                    score += 1
+                else:
+                    break
+            if len(cmd) == len(valid_cmd):
+                score += 1
+            if score > best_score and score >= 2:
+                best_score = score
+                best_match = valid_cmd
+
+        return best_match
 
     # ── Query execution ────────────────────────────────────────────────────
 
