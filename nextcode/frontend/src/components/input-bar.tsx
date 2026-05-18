@@ -70,9 +70,9 @@ export function InputBar({ inputValue, setInputValue, onSubmit, disabled, model 
       </Text>
       <Text color="gray">{"❯ "}</Text>
       <Text>{inputValue}</Text>
-      {!disabled && <Text backgroundColor="green">{" "}</Text>}
+      {!disabled && <Text color="green">{"▎"}</Text>}
       {disabled && (
-        <Text dimColor> thinking...</Text>
+        <Text dimColor>{" thinking..."}</Text>
       )}
     </Box>
   );

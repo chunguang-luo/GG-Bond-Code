@@ -85,6 +85,10 @@ class PermissionManager:
         Returns:
             The suggested prefix rule if applicable, or None.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("grant_session: tool=%s, wildcard=%s, params=%s", tool_name, wildcard, params)
+
         suggested_prefix = None
 
         if wildcard:
@@ -121,7 +125,7 @@ class PermissionManager:
 
     def ask_user(self, tool_name: str, params: dict[str, Any]) -> PermissionDecision:
         """Interactively ask the user for permission. Returns ALLOW or DENY."""
-        print(f"\n  \u2699 {tool_name} wants to execute:")
+        print(f"\n  ⚙ {tool_name} wants to execute:")
         for k, v in params.items():
             val = str(v)
             if len(val) > 100:

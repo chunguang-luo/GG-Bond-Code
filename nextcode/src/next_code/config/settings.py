@@ -61,7 +61,10 @@ def load_settings() -> None:
         _deep_merge(_settings, global_data)
 
     # Layer 2: Project config (.nextcode/.settings.json)
-    project_path = Path.cwd() / ".nextcode" / ".settings.json"
+    # Use project_root from Store if already loaded, otherwise cwd
+    from ..state.store import Store
+    project_root = Store().get("project_root", str(Path.cwd()))
+    project_path = Path(project_root) / ".nextcode" / ".settings.json"
     if project_path.exists():
         project_data = _load_json(project_path)
         _deep_merge(_settings, project_data)
@@ -125,7 +128,11 @@ def _set_nested(data: dict[str, Any], key: str, value: Any) -> None:
 
 def _persist_to_project(key: str, value: Any) -> None:
     """Persist a single key-value pair to the project .settings.json."""
-    project_path = Path.cwd() / ".nextcode" / ".settings.json"
+    # Use project_root from Store if available, otherwise cwd
+    from ..state.store import Store
+    project_root = Store().get("project_root", str(Path.cwd()))
+    project_path = Path(project_root) / ".nextcode" / ".settings.json"
+    logger.info("Persisting %s to %s (project_root=%s)", key, project_path, project_root)
     data = _load_json(project_path)
     _set_nested(data, key, value)
     _save_json(project_path, data)

@@ -7,7 +7,7 @@
  * - [n] Deny
  */
 
-import React, { useCallback } from "react";
+import React, { useState } from "react";
 import { Box, Text, useInput } from "ink";
 
 interface PermissionDialogProps {
@@ -17,15 +17,20 @@ interface PermissionDialogProps {
 }
 
 export function PermissionDialog({ toolName, params, onResponse }: PermissionDialogProps) {
+  const [selected, setSelected] = useState<"y" | "a" | "n" | null>(null);
+
   useInput(
     (input, key) => {
       if (key.return) return;
       const ch = input.toLowerCase();
       if (ch === "y") {
+        setSelected("y");
         onResponse("allow");
       } else if (ch === "a") {
+        setSelected("a");
         onResponse("always_allow");
       } else if (ch === "n") {
+        setSelected("n");
         onResponse("deny");
       }
     },
@@ -49,7 +54,7 @@ export function PermissionDialog({ toolName, params, onResponse }: PermissionDia
     >
       <Box marginBottom={1}>
         <Text color="yellow" bold>
-          ⚙ {toolName} wants to execute:
+          {"⚙ "}{toolName} wants to execute:
         </Text>
       </Box>
       {paramLines.map((line, i) => (
@@ -59,12 +64,9 @@ export function PermissionDialog({ toolName, params, onResponse }: PermissionDia
       ))}
       <Box marginTop={1}>
         <Text bold>Allow? </Text>
-        <Text color="green">[y]</Text>
-        <Text>es </Text>
-        <Text color="green">[a]</Text>
-        <Text>ll </Text>
-        <Text color="red">[n]</Text>
-        <Text>o</Text>
+        <Text color={selected === "y" ? "green" : "gray"} bold={selected === "y"}>[y]es </Text>
+        <Text color={selected === "a" ? "green" : "gray"} bold={selected === "a"}>[a]ll </Text>
+        <Text color={selected === "n" ? "red" : "gray"} bold={selected === "n"}>[n]o</Text>
       </Box>
     </Box>
   );

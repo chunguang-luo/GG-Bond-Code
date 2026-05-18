@@ -270,6 +270,7 @@ class IPCBridge:
         request_id = msg.payload.get("requestId", "")
         decision_str = msg.payload.get("decision", "deny")
         wildcard = msg.payload.get("wildcard", False)
+        logger.info("Permission response: decision=%s, wildcard=%s, tool=%s", decision_str, wildcard, msg.payload.get("toolName", ""))
 
         future = self._pending_permissions.get(request_id)
         if future is None or future.done():

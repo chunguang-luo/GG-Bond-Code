@@ -441,19 +441,18 @@ export function App({ transport }: AppProps) {
           <Text italic color="yellow">...</Text>
         </Box>
       )}
-      {permissionRequest ? (
+      <InputBar
+        inputValue={inputValue}
+        setInputValue={setInputValue}
+        onSubmit={handleSubmit}
+        disabled={isQueryRunning || !!permissionRequest}
+        model={model}
+      />
+      {permissionRequest && (
         <PermissionDialog
           toolName={permissionRequest.toolName}
           params={permissionRequest.params}
           onResponse={handlePermissionResponse}
-        />
-      ) : (
-        <InputBar
-          inputValue={inputValue}
-          setInputValue={setInputValue}
-          onSubmit={handleSubmit}
-          disabled={isQueryRunning}
-          model={model}
         />
       )}
     </Box>
