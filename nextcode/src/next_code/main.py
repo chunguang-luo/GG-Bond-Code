@@ -15,12 +15,9 @@ from .init import init
 @click.option("--print", "print_mode", is_flag=True, help="Non-interactive mode (read from stdin).")
 @click.option("--model", default=None, help="Model to use.")
 @click.option("--cwd", default=None, help="Working directory.")
-@click.option("--ink", "ink_mode", default=None,
-              type=click.Choice(["off", "auto", "on"], case_sensitive=False),
-              help="Ink frontend mode: off (Rich REPL), auto (try Ink, fallback), on (require Ink).")
 @click.pass_context
 def cli(ctx: click.Context, version: bool, print_mode: bool, model: str | None,
-        cwd: str | None, ink_mode: str | None) -> None:
+        cwd: str | None) -> None:
     """NextCode — AI-powered CLI assistant."""
     ctx.ensure_object(dict)
 
@@ -36,7 +33,6 @@ def cli(ctx: click.Context, version: bool, print_mode: bool, model: str | None,
     ctx.obj["model"] = model
     ctx.obj["cwd"] = cwd or str(Path.cwd())
     ctx.obj["print_mode"] = print_mode
-    ctx.obj["ink_mode"] = ink_mode
 
     # If no sub-command, launch interactive REPL
     if ctx.invoked_subcommand is None:
@@ -47,57 +43,24 @@ def cli(ctx: click.Context, version: bool, print_mode: bool, model: str | None,
 
 
 async def _run_interactive(ctx: click.Context) -> None:
-    """Launch interactive REPL session."""
-    from .setup import setup
-    from .ipc.fallback import resolve_ink_mode, InkMode, check_ink_available
-
-    setup(cwd=ctx.obj["cwd"], model=ctx.obj["model"])
-
-    mode = resolve_ink_mode(ctx.obj.get("ink_mode"))
-
-    if mode == InkMode.OFF:
-        # Always use Rich REPL
-        await _run_rich_repl(ctx)
-    elif mode == InkMode.ON:
-        # Require Ink, fail if unavailable
-        available, reason = check_ink_available()
-        if not available:
-            click.echo(f"Error: Ink frontend unavailable: {reason}", err=True)
-            raise SystemExit(1)
-        success = await _run_with_ink(ctx)
-        if not success:
-            click.echo("Error: Ink frontend failed to start.", err=True)
-            raise SystemExit(1)
-    else:
-        # AUTO: try Ink, fall back to Rich
-        available, reason = check_ink_available()
-        if available:
-            success = await _run_with_ink(ctx)
-            if not success:
-                click.echo(f"Ink frontend failed, falling back to Rich REPL...", err=True)
-                await _run_rich_repl(ctx)
-        else:
-            click.echo(f"Ink unavailable ({reason}), using Rich REPL", err=True)
-            await _run_rich_repl(ctx)
-
-
-async def _run_rich_repl(ctx: click.Context) -> None:
-    """Launch the Rich-based REPL (original path)."""
-    from .repl import REPL
-
-    repl = REPL(model=ctx.obj["model"])
-    await repl.run()
-
-
-async def _run_with_ink(ctx: click.Context) -> bool:
-    """Launch with Ink frontend. Returns True if successful."""
+    """Launch interactive REPL session with Ink frontend."""
     import logging
 
+    from .setup import setup
+    from .ipc.fallback import check_ink_available
     from .ipc.transport import IPCTransport
     from .ipc.ink_launcher import InkLauncher
     from .ipc.bridge import IPCBridge
 
     logger = logging.getLogger(__name__)
+
+    setup(cwd=ctx.obj["cwd"], model=ctx.obj["model"])
+
+    # Pre-flight check: Ink must be available
+    available, reason = check_ink_available()
+    if not available:
+        click.echo(f"Error: Ink frontend unavailable: {reason}", err=True)
+        raise SystemExit(1)
 
     transport = IPCTransport()
     launcher = InkLauncher(socket_path=transport.socket_path)
@@ -110,15 +73,16 @@ async def _run_with_ink(ctx: click.Context) -> bool:
         # 2. Launch Ink process (Ink inherits terminal stdin/stdout/stderr)
         success = await launcher.launch()
         if not success:
-            logger.warning("Ink: launch failed")
-            return False
+            click.echo("Error: Ink frontend failed to start.", err=True)
+            raise SystemExit(1)
 
         # 3. Wait for Ink to connect via IPC socket
         connected = await transport.wait_for_connection(timeout=10.0)
         if not connected:
             logger.warning("Ink: no connection from frontend")
             await launcher.shutdown()
-            return False
+            click.echo("Error: Ink frontend did not connect.", err=True)
+            raise SystemExit(1)
 
         # 4. Send session ready + welcome
         await bridge.send_session_ready()
@@ -131,11 +95,12 @@ async def _run_with_ink(ctx: click.Context) -> bool:
             await asyncio.sleep(0.5)
 
         logger.info("Ink: session ended")
-        return True
 
+    except SystemExit:
+        raise
     except Exception:
         logger.exception("Ink: unexpected error")
-        return False
+        raise SystemExit(1)
     finally:
         await launcher.shutdown()
         await transport.close()

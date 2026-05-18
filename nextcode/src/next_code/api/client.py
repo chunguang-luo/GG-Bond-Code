@@ -1,9 +1,10 @@
 """API client — supports both OpenAI-compatible and Anthropic backends.
 
 Model routing:
-  - deepseek-*  → OpenAI-compatible (deepseek API)
-  - claude-*    → Anthropic native
-  - others      → OpenAI-compatible (default)
+  - claude-*, minimax-*                    → Anthropic native
+  - deepseek-, glm-, gpt-, o1-, o3-, o4-, → OpenAI-compatible
+    qwen-, llama-, gemini-, mistral-, yi-  →
+  - others                                 → error (unknown model)
 """
 
 from __future__ import annotations
@@ -23,15 +24,21 @@ logger = logging.getLogger(__name__)
 # ── Model family detection ──────────────────────────────────────────
 
 _ANTHROPIC_PREFIXES = ("claude-", "minimax-")
-_OPENAI_PREFIXES = ("deepseek-",)
+_OPENAI_PREFIXES = (
+    "deepseek-", "glm-", "gpt-", "o1-", "o3-", "o4-",
+    "qwen-", "llama-", "gemini-", "mistral-", "yi-",
+)
 
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 
 _MAX_RETRIES = 7
 
 
-def _model_family(model: str) -> str:
-    """Return 'anthropic' or 'openai' based on model name."""
+def _model_family(model: str) -> str | None:
+    """Return 'anthropic' or 'openai' based on model name.
+
+    Returns None if the model name doesn't match any known prefix.
+    """
     lower = model.lower()
     for p in _ANTHROPIC_PREFIXES:
         if lower.startswith(p):
@@ -39,7 +46,7 @@ def _model_family(model: str) -> str:
     for p in _OPENAI_PREFIXES:
         if lower.startswith(p):
             return "openai"
-    return "openai"
+    return None
 
 
 # Public alias for external use
@@ -439,6 +446,14 @@ async def stream_message(
         max_tokens = get_setting("context.max_tokens", 8192)
 
     family = _model_family(model)
+    if family is None:
+        raise ValueError(
+            f"Unknown model: '{model}'. "
+            f"Model name must start with a known prefix: "
+            f"claude- (Anthropic), deepseek- or glm- (OpenAI-compatible). "
+            f"Please configure a valid model name via --model, NEXTCODE_MODEL, "
+            f"or ~/.nextcode/.settings.json (e.g. {{\"model\": \"deepseek-chat\"}})."
+        )
     # Clamp to model-specific max output limit
     from .models import get_max_output_tokens_for_model
 

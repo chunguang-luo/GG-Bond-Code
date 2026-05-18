@@ -4,8 +4,7 @@
 
 ## 特性
 
-- **双 UI 模式** — Rich REPL（Python 原生）+ Ink 前端（React 终端 UI），通过 `--ink` 切换
-- **双进程 IPC 架构** — Python 后端 + Node.js 前端，Unix Domain Socket 双向 JSON-Line 通信
+- **Ink 终端 UI** — React + Ink 前端，双进程 IPC 架构，Python 后端 + Node.js 前端，Unix Domain Socket 双向 JSON-Line 通信
 - **多模型支持** — DeepSeek / Claude / MiniMax，自动选择 API 后端
 - **核心工具集** — Bash、FileRead、FileEdit、FileWrite、Glob、Grep
 - **流式工具执行** — 并发分区执行 + 流式输出
@@ -26,7 +25,7 @@ cd nextcode
 pip install -e .
 ```
 
-Ink 前端（可选）：
+Ink 前端：
 
 ```bash
 cd nextcode/frontend
@@ -50,12 +49,8 @@ nextcode auth
 ### 使用
 
 ```bash
-# 交互模式（Rich REPL，默认）
+# 交互模式
 nextcode
-
-# 交互模式（Ink 前端）
-nextcode --ink auto    # 优先 Ink，不可用则回退 Rich
-nextcode --ink on      # 强制使用 Ink
 
 # 非交互模式
 echo "解释什么是 Python 装饰器" | nextcode --print
@@ -71,8 +66,7 @@ nextcode --model claude-sonnet-4-20250514
 |------|------|
 | **后端语言** | Python 3.12+ |
 | **CLI 框架** | Click |
-| **终端 UI (Python)** | Rich |
-| **终端 UI (Node.js)** | React 18 + Ink 5 |
+| **终端 UI** | React 18 + Ink 5 |
 | **Schema 验证** | Pydantic |
 | **API 客户端** | anthropic SDK / openai SDK |
 | **异步** | asyncio |
@@ -98,7 +92,7 @@ nextcode/
     ├── main.py                   # Click 命令编排
     ├── init.py                   # 配置/认证/预连接初始化
     ├── setup.py                  # 会话级初始化
-    ├── repl.py                   # Rich REPL 循环
+    ├── repl.py                   # REPL 循环
     ├── query.py                  # 对话循环核心
     ├── prefetch.py               # 系统上下文预取
     ├── config/                   # 配置 + 认证
@@ -117,24 +111,18 @@ nextcode/
 
 ## 架构概览
 
-### 双 UI 模式
+### 双进程 IPC 架构
 
 ```
                     ┌─────────────┐
                     │  CLI 入口    │
                     └──────┬──────┘
                            │
-                    ┌──────┴──────┐
-                    │  --ink 选项  │
-                    └──────┬──────┘
-                           │
-              ┌────────────┴────────────┐
-              │                         │
-     ┌────────┴────────┐    ┌──────────┴──────────┐
-     │   Rich REPL     │    │   Ink Frontend     │
-     │  (Python 进程)   │    │  Python + Node.js  │
-     │                  │    │   双进程 IPC 通信    │
-     └─────────────────┘    └─────────────────────┘
+                ┌──────────┴──────────┐
+                │   Ink Frontend     │
+                │  Python + Node.js  │
+                │   双进程 IPC 通信    │
+                └─────────────────────┘
 ```
 
 ### IPC 消息流
@@ -171,7 +159,7 @@ Python 后端 (IPCBridge)              Ink 前端 (App)
 | 分层启动链路 | ✅ |
 | 配置系统 | ✅ |
 | 多模型支持 | ✅ |
-| 交互式 REPL (Rich) | ✅ |
+| 交互式 REPL (Ink) | ✅ |
 | Ink 终端 UI | ✅ |
 | 双进程 IPC 架构 | ✅ |
 | 斜杠命令系统（注册/调度/补全/提示） | ✅ |

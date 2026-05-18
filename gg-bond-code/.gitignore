@@ -1,8 +1,0 @@
-__pycache__/
-*.pyc
-.settings.json
-.ggbond
-.idea/
-
-
-/frontend/node_modules/

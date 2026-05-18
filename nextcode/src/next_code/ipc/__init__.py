@@ -4,7 +4,7 @@ from .transport import IPCTransport
 from .protocol import MessageType, Message
 from .bridge import IPCBridge
 from .ink_launcher import InkLauncher
-from .fallback import check_ink_available, InkMode
+from .fallback import check_ink_available
 
 __all__ = [
     "IPCTransport",
@@ -13,5 +13,4 @@ __all__ = [
     "IPCBridge",
     "InkLauncher",
     "check_ink_available",
-    "InkMode",
 ]

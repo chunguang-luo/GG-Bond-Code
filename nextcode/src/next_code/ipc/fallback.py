@@ -1,53 +1,19 @@
-"""Fallback detection — decide whether to use Ink or Rich REPL.
+"""Ink frontend availability check.
 
 Checks:
 1. Node.js availability (>= 18)
 2. Frontend bundle existence
-3. --ink flag value (off/auto/on)
-4. Previous crash history (optional)
 
-Returns an InkMode that determines the launch strategy.
+Used as a pre-flight check before launching the Ink frontend.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import re
 import subprocess
-from enum import Enum
-from typing import Any
 
 logger = logging.getLogger(__name__)
-
-
-class InkMode(str, Enum):
-    """Ink frontend mode."""
-    OFF = "off"      # Always use Rich REPL
-    AUTO = "auto"    # Try Ink, fall back to Rich
-    ON = "on"        # Require Ink, fail if unavailable
-
-
-def resolve_ink_mode(flag_value: str | None = None) -> InkMode:
-    """Resolve the effective Ink mode from CLI flag and environment.
-
-    Priority:
-    1. --ink CLI flag (off/auto/on)
-    2. NEXTCODE_INK environment variable
-    3. Default: AUTO (once Phase 6 is complete; OFF for now)
-    """
-    if flag_value is not None:
-        try:
-            return InkMode(flag_value.lower())
-        except ValueError:
-            logger.warning("Invalid --ink value: %s (expected off/auto/on)", flag_value)
-
-    env_value = os.environ.get("NEXTCODE_INK", "").lower()
-    if env_value in ("off", "auto", "on"):
-        return InkMode(env_value)
-
-    # Default: OFF until Phase 6 (Ink default)
-    return InkMode.OFF
 
 
 def check_ink_available() -> tuple[bool, str]:
