@@ -1,0 +1,24 @@
+{
+  "name": "nextcode-frontend",
+  "version": "0.1.0",
+  "description": "Ink frontend for NextCode — React-based terminal UI",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx src/index.tsx",
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ink": "^5.0.1",
+    "marked": "^15.0.0",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "esbuild": "^0.21.0",
+    "tsx": "^4.11.0",
+    "typescript": "^5.4.5"
+  }
+}
