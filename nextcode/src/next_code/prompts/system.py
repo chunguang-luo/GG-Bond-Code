@@ -6,6 +6,7 @@ from next_code.prompts.sections.identity import section as identity_section
 from next_code.prompts.sections.system import section as system_section
 from next_code.prompts.sections.actions import section as actions_section
 from next_code.prompts.sections.tool_guidelines import section as tool_guidelines_section
+from next_code.prompts.sections.agent_guidelines import section as agent_guidelines_section
 from next_code.prompts.sections.coding_preferences import section as coding_preferences_section
 from next_code.prompts.sections.output_efficiency import section as output_efficiency_section
 from next_code.prompts.sections.project_context import section as project_context_section
@@ -30,6 +31,7 @@ def build_system_prompt(cwd: str | None = None) -> list[str]:
         system_section(),
         actions_section(),
         tool_guidelines_section(),
+        agent_guidelines_section(),
         coding_preferences_section(),
         output_efficiency_section(),
 

@@ -36,6 +36,7 @@ class QueryEvent:
     tool_purpose: str = ""  # model's text before this tool call, explaining intent
     tool_use_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)  # Extra data (e.g. warning level)
+    source: str = ""  # "agent" for sub-agent events, "" for parent events
 
 
 class QueryRunner:
@@ -127,6 +128,12 @@ class QueryRunner:
         self._loop_state.set_transition(TransitionReason.NEXT_TURN, detail="run started")
         # Clear warning suppression from previous turns
         self._warning_manager.clear_suppression()
+
+        # Set up event forwarding so sub-tools (e.g. AgentTool) can emit events
+        # that flow through this yield loop to IPCBridge and the frontend.
+        import asyncio
+        ctx._event_queue: asyncio.Queue[QueryEvent | None] = asyncio.Queue()
+        ctx.emit_event = lambda event: ctx._event_queue.put_nowait(event)
 
         # Get contexts (computed on demand with caching)
         system_ctx = get_system_context(ctx.get_state("cwd"))

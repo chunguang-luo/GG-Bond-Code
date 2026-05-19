@@ -54,6 +54,22 @@ class ToolUseContext:
     agent_id: str | None = None
     agent_type: str | None = None
 
+    # ── Event forwarding ─────────────────────────────────────────────
+    emit_event: Callable[[Any], None] | None = None
+    """Forward events from sub-tools (e.g. AgentTool) to the QueryRunner event loop.
+    Set by QueryRunner.run() so that tools can yield real-time events that
+    flow through to IPCBridge and the frontend."""
+
+    emit_ipc: Callable[[Any], Any] | None = None
+    """Direct IPC emit callback — bypasses the QueryRunner yield loop entirely.
+    Set by IPCBridge so that long-running sub-tools (e.g. AgentTool) can
+    stream events to the frontend in real-time, without waiting for the
+    tool_result to be yielded."""
+
+    agent_depth: int = 0
+    """Current Agent nesting depth. 0 = main agent, 1 = sub-agent, 2 = sub-sub-agent.
+    Used to enforce a maximum nesting depth of 2."""
+
     def get_set_state_for_tasks(self) -> Callable[[str, Any], None]:
         """Get the task-penetrating setter, falling back to set_state."""
         return self.set_state_for_tasks or self.set_state
@@ -91,8 +107,12 @@ def create_subagent_context(
     *,
     share_abort: bool = False,
     share_set_state: bool = False,
+    share_metrics: bool = False,
     agent_id: str | None = None,
     agent_type: str | None = None,
+    permission_mode: str | None = None,
+    allowed_tools: list[str] | None = None,
+    avoid_permission_prompts: bool = True,
 ) -> ToolUseContext:
     """Create an isolated ToolUseContext for a sub-agent.
 
@@ -100,14 +120,19 @@ def create_subagent_context(
     - set_state defaults to no-op (sub-agents shouldn't modify UI state)
     - set_state_for_tasks always penetrates to the parent's root Store
     - abort can be shared or independent
-    - permissions are isolated with shouldAvoidPermissionPrompts
+    - permissions are isolated with avoid_permission_prompts
 
     Args:
         parent: The parent context to derive from.
         share_abort: If True, share the parent's abort event.
         share_set_state: If True, share the parent's set_state (dangerous).
+        share_metrics: If True, share API metrics reporting.
         agent_id: Optional agent identifier.
         agent_type: Optional agent type string.
+        permission_mode: Override permission mode (e.g. 'plan' for read-only).
+        allowed_tools: Replace session-level allowed tools for this agent.
+        avoid_permission_prompts: Auto-deny permission prompts (default True
+            for non-interactive sub-agents).
     """
     # set_state: no-op by default, opt-in to share
     set_state = parent.set_state if share_set_state else _noop_set_state
@@ -119,17 +144,56 @@ def create_subagent_context(
     # abort: shared or independent
     abort = parent.abort if share_abort else asyncio.Event()
 
+    # permissions: wrap for sub-agent isolation
+    # Sub-agent permission decisions must not leak back to the parent.
+    permissions = _wrap_permissions(
+        parent.permissions,
+        mode=permission_mode,
+        allowed_tools=allowed_tools,
+        avoid_prompts=avoid_permission_prompts,
+    )
+
     return ToolUseContext(
         get_state=parent.get_state,
         set_state=set_state,
         set_state_for_tasks=set_state_for_tasks,
-        permissions=parent.permissions,
+        permissions=permissions,
         registry=parent.registry,
         abort=abort,
         file_cache=parent.file_cache.clone(),
         agent_id=agent_id,
         agent_type=agent_type,
+        emit_ipc=parent.emit_ipc,  # 继承父级的 IPC 直通，支持嵌套实时输出
+        agent_depth=parent.agent_depth + 1,  # 嵌套深度 +1
     )
+
+
+def _wrap_permissions(
+    parent: PermissionManager,
+    *,
+    mode: str | None = None,
+    allowed_tools: list[str] | None = None,
+    avoid_prompts: bool = True,
+) -> PermissionManager:
+    """Wrap permissions for a sub-agent.
+
+    Creates a new PermissionManager (not sharing state with the parent)
+    so sub-agent permission decisions don't leak back.
+    """
+    wrapped = PermissionManager(
+        mode=mode or parent.mode,
+        avoid_permission_prompts=avoid_prompts,
+    )
+
+    # Inherit parent's persistent allow/deny/ask rules
+    wrapped._allowed = list(parent._allowed)
+    wrapped._denied = list(parent._denied)
+    wrapped._ask_rules = list(parent._ask_rules)
+
+    if allowed_tools is not None:
+        wrapped.set_session_allowed_tools(allowed_tools)
+
+    return wrapped
 
 
 def _noop_set_state(key: str, value: Any) -> None:

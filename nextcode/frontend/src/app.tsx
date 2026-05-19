@@ -20,7 +20,7 @@ import { WelcomeScreen } from "./components/welcome-screen";
 
 interface DisplayMessage {
   id: string;
-  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system";
+  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system" | "info" | "command" | "agent_start" | "agent_tool_use" | "agent_tool_result" | "agent_result";
   content: string;
   toolName?: string;
   toolInput?: Record<string, unknown>;
@@ -93,6 +93,8 @@ export function App({ transport }: AppProps) {
 
   // Use ref for currentText to avoid stale closures in onMessage
   const currentTextRef = useRef("");
+  // Accumulate sub-agent streaming text for Markdown rendering
+  const agentTextRef = useRef("");
   const msgIdRef = useRef(0);
   const nextId = () => `msg-${++msgIdRef.current}`;
 
@@ -124,12 +126,22 @@ export function App({ transport }: AppProps) {
 
   // Derive currentText from ref for rendering
   const currentText = currentTextRef.current;
+  const agentText = agentTextRef.current;
 
   // Helper: finalize current accumulated text into messages
   const finalizeCurrentText = useCallback(() => {
     if (currentTextRef.current) {
       const text = currentTextRef.current;
       currentTextRef.current = "";
+      setMessages((prev) => [...prev, { id: nextId(), type: "text", content: text }]);
+    }
+  }, []);
+
+  // Helper: finalize accumulated sub-agent text into messages
+  const finalizeAgentText = useCallback(() => {
+    if (agentTextRef.current) {
+      const text = agentTextRef.current;
+      agentTextRef.current = "";
       setMessages((prev) => [...prev, { id: nextId(), type: "text", content: text }]);
     }
   }, []);
@@ -175,6 +187,7 @@ export function App({ transport }: AppProps) {
 
         case CoreToInk.QUERY_TOOL_START: {
           finalizeCurrentText();
+          finalizeAgentText();
           scheduleFlush();
           break;
         }
@@ -249,6 +262,96 @@ export function App({ transport }: AppProps) {
               type: "warning",
               content: (msg.payload as { content?: string }).content || "",
               metadata: msg.payload.metadata as Record<string, unknown> | undefined,
+            },
+          ]);
+          break;
+        }
+
+        case CoreToInk.AGENT_START: {
+          finalizeCurrentText();
+          const agentMeta = msg.payload as {
+            agent_id?: string;
+            agent_type?: string;
+            description?: string;
+            prompt?: string;
+          };
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextId(),
+              type: "agent_start",
+              content: agentMeta.description || agentMeta.agent_type || "Agent",
+              metadata: msg.payload as Record<string, unknown>,
+            },
+          ]);
+          break;
+        }
+
+        case CoreToInk.AGENT_TEXT_DELTA: {
+          // Accumulate sub-agent streaming text into ref for Markdown rendering
+          const agentText = (msg.payload as { text?: string }).text || "";
+          if (agentText) {
+            agentTextRef.current += agentText;
+            scheduleFlush();
+          }
+          break;
+        }
+
+        case CoreToInk.AGENT_TOOL_USE: {
+          // Finalize any accumulated agent text before showing tool call
+          finalizeAgentText();
+          const agentToolPayload = msg.payload as {
+            toolUseId?: string;
+            toolName?: string;
+            toolInput?: Record<string, unknown>;
+          };
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: agentToolPayload.toolUseId || nextId(),
+              type: "agent_tool_use",
+              content: "",
+              toolName: agentToolPayload.toolName,
+              toolInput: agentToolPayload.toolInput,
+            },
+          ]);
+          break;
+        }
+
+        case CoreToInk.AGENT_TOOL_RESULT: {
+          const agentResultPayload = msg.payload as {
+            toolUseId?: string;
+            toolName?: string;
+            toolResult?: string;
+            toolError?: boolean;
+            elapsedMs?: number;
+          };
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: agentResultPayload.toolUseId || nextId(),
+              type: "agent_tool_result",
+              content: "",
+              toolName: agentResultPayload.toolName,
+              toolResult: agentResultPayload.toolResult,
+              toolError: agentResultPayload.toolError,
+              elapsedMs: agentResultPayload.elapsedMs,
+            },
+          ]);
+          break;
+        }
+
+        case CoreToInk.AGENT_RESULT: {
+          // Finalize any accumulated agent text before showing result
+          finalizeAgentText();
+          const agentResultMeta = msg.payload as { elapsed?: string };
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextId(),
+              type: "agent_result",
+              content: (msg.payload as { content?: string }).content || "",
+              metadata: { ...msg.payload, _elapsed: agentResultMeta.elapsed || "" } as Record<string, unknown>,
             },
           ]);
           break;
@@ -439,7 +542,7 @@ export function App({ transport }: AppProps) {
   return (
     <Box flexDirection="column" height="100%">
       {showWelcome && <WelcomeScreen model={model} cwd={cwd} />}
-      <MessageList messages={messages} currentText={currentText} />
+      <MessageList messages={messages} currentText={currentText} agentText={agentText} />
       {/* Thinking indicator with live elapsed time */}
       {isQueryRunning && queryStartMs !== null && (
         <Box marginTop={0} marginLeft={1}>

@@ -69,6 +69,9 @@ class IPCBridge:
         # Tool start times for elapsed tracking
         self._tool_start_times: dict[str, float] = {}
 
+        # Agent start times for elapsed tracking
+        self._agent_start_times: dict[str, float] = {}
+
         # Track if a query is running
         self._query_task: asyncio.Task | None = None
 
@@ -189,6 +192,12 @@ class IPCBridge:
     async def _run_query(self, user_message: str) -> None:
         """Run a query and stream events to Ink via IPC."""
         self._tool_start_times.clear()
+        self._agent_start_times.clear()
+
+        # Inject direct IPC emit callback so long-running sub-tools
+        # (e.g. AgentTool) can stream events in real-time without
+        # waiting for the parent QueryRunner to yield tool_result.
+        self._context.emit_ipc = self._emit_event
 
         try:
             async for event in self._runner.run(user_message):
@@ -208,11 +217,27 @@ class IPCBridge:
             logger.exception("IPC: query error")
             await self.transport.send_event(CoreToInk.QUERY_ERROR.value, {"content": str(e)})
 
+    # Mapping from sub-agent event types to agent-specific IPC message types.
+    # Events with source="agent" use these instead of the parent QUERY_EVENT_MAP,
+    # so the frontend can render sub-agent output distinctly.
+    _AGENT_EVENT_MAP: dict[str, str] = {
+        "text": CoreToInk.AGENT_TEXT_DELTA.value,
+        "tool_use": CoreToInk.AGENT_TOOL_USE.value,
+        "tool_result": CoreToInk.AGENT_TOOL_RESULT.value,
+        "agent_start": CoreToInk.AGENT_START.value,
+        "agent_result": CoreToInk.AGENT_RESULT.value,
+    }
+
     async def _emit_event(self, event: QueryEvent) -> None:
         """Translate a QueryEvent into an IPC message and send it."""
-        msg_type = QUERY_EVENT_MAP.get(event.type)
+        # Sub-agent events use the agent-specific map
+        if event.source == "agent":
+            msg_type = self._AGENT_EVENT_MAP.get(event.type)
+            logger.debug("IPC: agent event type=%s → msg_type=%s", event.type, msg_type)
+        else:
+            msg_type = QUERY_EVENT_MAP.get(event.type)
         if msg_type is None:
-            logger.warning("IPC: unmapped event type: %s", event.type)
+            logger.warning("IPC: unmapped event type: %s (source=%s)", event.type, event.source)
             return
 
         payload: dict[str, Any] = {}
@@ -259,7 +284,40 @@ class IPCBridge:
         elif event.type == "warning":
             payload = {"content": event.content, "metadata": event.metadata}
 
-        await self.transport.send_event(msg_type.value, payload)
+        elif event.type == "agent_start":
+            agent_id = event.metadata.get("agent_id", "")
+            if agent_id:
+                self._agent_start_times[agent_id] = time.monotonic()
+            payload = {
+                "agent_id": agent_id,
+                "agent_type": event.metadata.get("agent_type", "unknown"),
+                "description": event.metadata.get("description", ""),
+                "prompt": event.metadata.get("prompt", ""),
+            }
+
+        elif event.type == "agent_result":
+            agent_id = event.metadata.get("agent_id", "")
+            elapsed_sec = 0
+            if agent_id and agent_id in self._agent_start_times:
+                t0 = self._agent_start_times.pop(agent_id)
+                elapsed_sec = time.monotonic() - t0
+            # Format elapsed as "Xm Ys" or "Ys"
+            if elapsed_sec >= 60:
+                m = int(elapsed_sec // 60)
+                s = int(elapsed_sec % 60)
+                elapsed_str = f"{m}m {s}s"
+            else:
+                elapsed_str = f"{int(elapsed_sec)}s"
+            payload = {
+                "content": event.content,
+                "agent_id": agent_id,
+                "agent_type": event.metadata.get("agent_type", "unknown"),
+                "elapsed": elapsed_str,
+            }
+
+        # msg_type is either a CoreToInk enum (parent events) or a str (agent events)
+        msg_type_str = msg_type.value if hasattr(msg_type, "value") else msg_type
+        await self.transport.send_event(msg_type_str, payload)
 
     # ── Conditional skill activation ────────────────────────────────────────
 

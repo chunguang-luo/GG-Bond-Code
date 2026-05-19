@@ -55,6 +55,17 @@ class CoreToInk(str, Enum):
     # Command list sync
     COMMANDS_UPDATE = "commands.update"
 
+    # Agent lifecycle
+    AGENT_START = "agent.start"
+    AGENT_RESULT = "agent.result"
+
+    # Agent real-time streaming — sub-agent text/tool events forwarded
+    # with "agent." prefix so the frontend can render them distinctly
+    # from the parent conversation's events.
+    AGENT_TEXT_DELTA = "agent.text_delta"
+    AGENT_TOOL_USE = "agent.tool_use"
+    AGENT_TOOL_RESULT = "agent.tool_result"
+
     # Heartbeat
     PING = "ping"
 
@@ -135,6 +146,8 @@ QUERY_EVENT_MAP: dict[str, CoreToInk] = {
     "tool_result": CoreToInk.QUERY_TOOL_RESULT,
     "error": CoreToInk.QUERY_ERROR,
     "warning": CoreToInk.QUERY_WARNING,
+    "agent_start": CoreToInk.AGENT_START,
+    "agent_result": CoreToInk.AGENT_RESULT,
 }
 
 

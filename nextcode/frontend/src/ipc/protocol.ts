@@ -46,6 +46,16 @@ export const CoreToInk = {
   // Command list sync
   COMMANDS_UPDATE: "commands.update",
 
+  // Agent lifecycle
+  AGENT_START: "agent.start",
+  AGENT_RESULT: "agent.result",
+
+  // Agent real-time streaming — sub-agent events with "agent." prefix
+  // so the frontend renders them distinctly from parent conversation
+  AGENT_TEXT_DELTA: "agent.text_delta",
+  AGENT_TOOL_USE: "agent.tool_use",
+  AGENT_TOOL_RESULT: "agent.tool_result",
+
   // Heartbeat
   PING: "ping",
 } as const;

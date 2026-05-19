@@ -27,12 +27,20 @@ class PermissionDecision(Enum):
 class PermissionManager:
     """Manage tool execution permissions based on allow/deny/ask lists."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        mode: str | None = None,
+        avoid_permission_prompts: bool = False,
+    ) -> None:
         self._allowed: list[str] = list(get_setting("permissions.allow", []))
         self._denied: list[str] = list(get_setting("permissions.deny", []))
         self._ask_rules: list[str] = list(get_setting("permissions.ask", []))
         # Runtime session grants (user approved during this session)
         self._session_allowed: set[str] = set()
+        # ── Agent support ──────────────────────────────────────────
+        self._mode: str | None = mode
+        self._avoid_permission_prompts: bool = avoid_permission_prompts
 
     def check(
         self, tool_name: str, params: dict[str, Any], *, registry: ToolRegistry | None = None,
@@ -71,6 +79,12 @@ class PermissionManager:
             tool = registry.get(tool_name)
             if tool is not None and tool.is_read_only(params):
                 return PermissionDecision.ALLOW
+
+        # Sub-agents that cannot interact with the user should auto-deny
+        # instead of asking — otherwise the entire flow blocks on an
+        # unanswered permission prompt.
+        if self._avoid_permission_prompts:
+            return PermissionDecision.DENY
 
         return PermissionDecision.ASK
 
@@ -166,3 +180,18 @@ class PermissionManager:
     def _match(self, pattern: str, key: str) -> bool:
         """Simple glob-style matching."""
         return fnmatch.fnmatch(key, pattern)
+
+    # ── Agent support ──────────────────────────────────────────────────
+
+    @property
+    def mode(self) -> str | None:
+        """Permission mode — e.g. 'default', 'plan'. None = not set."""
+        return self._mode
+
+    def set_session_allowed_tools(self, tools: list[str]) -> None:
+        """Replace session-level allowed tools for a sub-agent.
+
+        Used by create_subagent_context() to enforce AgentDefinition.tools.
+        Replaces the existing session grants (not the persistent allow list).
+        """
+        self._session_allowed = set(tools)
