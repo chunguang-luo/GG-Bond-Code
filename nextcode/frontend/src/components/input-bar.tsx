@@ -19,6 +19,7 @@ interface InputBarProps {
   setInputState: (value: InputState | ((prev: InputState) => InputState)) => void;
   onSubmit: (text: string) => void;
   disabled?: boolean;
+  isQueryRunning?: boolean;
   model?: string;
   commands?: CommandInfo[];
 }
@@ -28,6 +29,7 @@ export function InputBar({
   setInputState,
   onSubmit,
   disabled,
+  isQueryRunning,
   model,
   commands = [],
 }: InputBarProps) {
@@ -155,15 +157,16 @@ export function InputBar({
         </Box>
       )}
       {/* Input line */}
-      <Box borderStyle="single" borderColor="green" paddingLeft={1} paddingRight={1}>
+      <Box borderStyle="single" borderColor={isQueryRunning ? "yellow" : "green"} paddingLeft={1} paddingRight={1}>
         <Text color="green" bold>
           {"nextcode "}
         </Text>
         <Text color="gray">{"❯ "}</Text>
         <Text>{leftOfCursor}</Text>
-        {!disabled && <Text color="green" inverse>{rightOfCursor.length > 0 ? rightOfCursor[0] : " "}</Text>}
+        {!disabled && <Text color={isQueryRunning ? "yellow" : "green"} inverse>{rightOfCursor.length > 0 ? rightOfCursor[0] : " "}</Text>}
         <Text>{rightOfCursor.length > 0 ? rightOfCursor.slice(1) : ""}</Text>
-        {disabled && <Text dimColor>{" thinking..."}</Text>}
+        {disabled && <Text dimColor>{" waiting for permission..."}</Text>}
+        {isQueryRunning && !disabled && value.length === 0 && <Text dimColor color="yellow">{" type to queue a task..."}</Text>}
       </Box>
     </Box>
   );

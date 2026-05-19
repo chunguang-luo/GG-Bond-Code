@@ -20,7 +20,7 @@ import { WelcomeScreen } from "./components/welcome-screen";
 
 interface DisplayMessage {
   id: string;
-  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system" | "info" | "command" | "agent_start" | "agent_tool_use" | "agent_tool_result" | "agent_result";
+  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system" | "info" | "command" | "agent_start" | "agent_tool_use" | "agent_tool_result" | "agent_result" | "queued";
   content: string;
   toolName?: string;
   toolInput?: Record<string, unknown>;
@@ -95,6 +95,13 @@ export function App({ transport }: AppProps) {
   const currentTextRef = useRef("");
   // Accumulate sub-agent streaming text for Markdown rendering
   const agentTextRef = useRef("");
+  // Queue of user messages submitted while a query is running.
+  // Shown above the input bar as pending tasks. When the current response
+  // finishes, the first queued message is sent as the next query.
+  // Using ref + state pair: ref for synchronous access in onMessage,
+  // state for triggering re-render to show the pending list.
+  const pendingQuestionsRef = useRef<string[]>([]);
+  const [pendingQuestions, setPendingQuestions] = useState<string[]>([]);
   const msgIdRef = useRef(0);
   const nextId = () => `msg-${++msgIdRef.current}`;
 
@@ -365,8 +372,23 @@ export function App({ transport }: AppProps) {
           }
           finalizeCurrentText();
           setRenderTick((t) => t + 1); // Immediate final render
-          setIsQueryRunning(false);
-          setQueryStartMs(null);
+          // Check pending queue for the next question
+          const pending = pendingQuestionsRef.current;
+          if (pending.length > 0) {
+            const next = pending.shift()!;
+            setPendingQuestions([...pending]);
+            // Show the question in message list after the answer
+            setMessages((prev) => [
+              ...prev,
+              { id: nextId(), type: "system", content: next },
+            ]);
+            setIsQueryRunning(true);
+            setQueryStartMs(Date.now());
+            transport.sendEvent(InkToCore.USER_MESSAGE, { text: next });
+          } else {
+            setIsQueryRunning(false);
+            setQueryStartMs(null);
+          }
           break;
         }
 
@@ -444,6 +466,19 @@ export function App({ transport }: AppProps) {
         case CoreToInk.QUERY_CLEARED: {
           setMessages([]);
           currentTextRef.current = "";
+          agentTextRef.current = "";
+          setShowWelcome(true);
+          break;
+        }
+
+        case CoreToInk.QUERY_QUEUED: {
+          // Backend confirmed the message was queued — already shown by handleSubmit
+          break;
+        }
+
+        case CoreToInk.QUERY_DEQUEUE: {
+          // Backend confirms dequeued — no action needed, frontend already
+          // sent the message directly on QUERY_COMPLETE.
           break;
         }
 
@@ -485,6 +520,31 @@ export function App({ transport }: AppProps) {
 
   // ── User Input ────────────────────────────────────────────────────────────
 
+  // Double-ESC interrupt: press Escape twice within 500ms to cancel the
+  // current query. Uses a ref to track the last ESC timestamp.
+  const lastEscRef = useRef(0);
+
+  useInput((input, key) => {
+    if (key.escape && isQueryRunning) {
+      const now = Date.now();
+      if (now - lastEscRef.current < 500) {
+        // Double ESC — interrupt current query
+        lastEscRef.current = 0;
+        transport.sendEvent(InkToCore.USER_INTERRUPT, {});
+        setMessages((prev) => [
+          ...prev,
+          { id: nextId(), type: "info", content: "⏹ Interrupted" },
+        ]);
+        setIsQueryRunning(false);
+        setQueryStartMs(null);
+        pendingQuestionsRef.current = [];
+        setPendingQuestions([]);
+      } else {
+        lastEscRef.current = now;
+      }
+    }
+  });
+
   const handleSubmit = useCallback(
     (text: string) => {
       if (text.startsWith("/")) {
@@ -498,18 +558,25 @@ export function App({ transport }: AppProps) {
           exit();
         }
       } else if (text.trim()) {
-        setIsQueryRunning(true);
-        setQueryStartMs(Date.now());
         setShowWelcome(false);
-        // Show user's question in message list
-        setMessages((prev) => [
-          ...prev,
-          { id: nextId(), type: "system", content: text },
-        ]);
-        transport.sendEvent(InkToCore.USER_MESSAGE, { text });
+        if (isQueryRunning) {
+          // Query is running — add to pending list shown above input bar.
+          // Will be sent as the next query after the current response finishes.
+          pendingQuestionsRef.current.push(text);
+          setPendingQuestions([...pendingQuestionsRef.current]);
+        } else {
+          setIsQueryRunning(true);
+          setQueryStartMs(Date.now());
+          // Show user's question in message list
+          setMessages((prev) => [
+            ...prev,
+            { id: nextId(), type: "system", content: text },
+          ]);
+          transport.sendEvent(InkToCore.USER_MESSAGE, { text });
+        }
       }
     },
-    [transport, exit]
+    [transport, exit, isQueryRunning]
   );
 
   const handlePermissionResponse = useCallback(
@@ -551,11 +618,24 @@ export function App({ transport }: AppProps) {
           <Text italic color="yellow">...</Text>
         </Box>
       )}
+      {/* Pending questions shown above input bar while a query is running */}
+      {pendingQuestions.length > 0 && (
+        <Box flexDirection="column">
+          {pendingQuestions.map((q, i) => (
+            <Box key={i} marginTop={1} marginBottom={0}>
+              <Text dimColor color="yellow">⏳ </Text>
+              <Text backgroundColor="gray" color="white" bold>{"> "}</Text>
+              <Text backgroundColor="gray" color="white">{" " + q + " "}</Text>
+            </Box>
+          ))}
+        </Box>
+      )}
       <InputBar
         inputState={inputState}
         setInputState={setInputState}
         onSubmit={handleSubmit}
-        disabled={isQueryRunning || !!permissionRequest}
+        disabled={!!permissionRequest}
+        isQueryRunning={isQueryRunning}
         model={model}
         commands={commands}
       />

@@ -29,7 +29,7 @@ def get_builtin_agents() -> list[AgentDefinition]:
             "level: quick for basic searches, medium for moderate exploration, "
             "very thorough for comprehensive analysis.",
             source=AgentSource.BUILTIN,
-            disallowed_tools=["Edit", "Write", "NotebookEdit"],
+            disallowed_tools=["Edit", "Write", "NotebookEdit", "Agent"],
             model=None,  # inherit from parent
             omit_claude_md=True,
             omit_git_status=True,

@@ -10,7 +10,7 @@ import { Markdown, StreamingMarkdown } from "../utils/markdown";
 
 export interface DisplayMessage {
   id: string;
-  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system" | "info" | "command" | "agent_start" | "agent_tool_use" | "agent_tool_result" | "agent_result";
+  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system" | "info" | "command" | "agent_start" | "agent_tool_use" | "agent_tool_result" | "agent_result" | "queued";
   content: string;
   toolName?: string;
   toolInput?: Record<string, unknown>;
@@ -57,6 +57,16 @@ function formatElapsed(ms: number | undefined): string {
 
 function MessageItem({ msg }: { msg: DisplayMessage }) {
   switch (msg.type) {
+    case "queued":
+      // Queued user message — waiting for current task to finish
+      return (
+        <Box marginTop={1} marginBottom={0}>
+          <Text backgroundColor="gray" color="white" bold>{"> "}</Text>
+          <Text backgroundColor="gray" color="white">{" " + msg.content + " "}</Text>
+          <Text dimColor color="yellow">{" ⏳"}</Text>
+        </Box>
+      );
+
     case "system":
       // User's question — gray background, separated from answer
       return (

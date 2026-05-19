@@ -72,9 +72,11 @@ class AgentTool(Tool):
         subagent_type = params.get("subagent_type", "general-purpose")
         is_async = params.get("run_in_background", False)
 
-        # 检查嵌套深度 — 最多允许 2 层（depth 0→1→2）
+        # 检查嵌套深度 — 最多允许 2 层嵌套
+        # depth=0 主Agent，depth=1 第一层子Agent，depth=2 第二层子Agent
+        # depth>=3 时拒绝，即最多2层嵌套
         current_depth = getattr(ctx, "agent_depth", 0)
-        if current_depth >= 2:
+        if current_depth >= 3:
             return ToolResult(
                 output=f"Agent 嵌套深度已达上限（当前 {current_depth} 层，最多 2 层），"
                        f"请直接使用工具完成任务，不要再启动子 Agent。",
@@ -134,7 +136,13 @@ class AgentTool(Tool):
         return ToolResult(output=result)
 
     def is_concurrency_safe(self, params: dict[str, Any]) -> bool:
-        return False
+        """Allow multiple Agent calls to run concurrently.
+
+        Multiple sub-agents can safely run in parallel since each gets its
+        own isolated context (create_subagent_context). The nesting depth
+        limit (2 levels) is enforced inside execute() via agent_depth.
+        """
+        return True
 
     def get_timeout(self) -> float:
         """Agent tool needs more time — sub-agents may run multiple tool calls."""

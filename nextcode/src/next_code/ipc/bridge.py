@@ -75,6 +75,11 @@ class IPCBridge:
         # Track if a query is running
         self._query_task: asyncio.Task | None = None
 
+        # Message queue: user messages submitted while a query is running
+        # are enqueued and processed in order after the current query completes.
+        self._message_queue: list[str] = []
+        self._is_query_running = False
+
         # Load skills (async — fire and forget, skills register when ready)
         self._skills_loaded = False
 
@@ -118,15 +123,22 @@ class IPCBridge:
     # ── User input handling ────────────────────────────────────────────────
 
     async def _handle_user_message(self, text: str) -> None:
-        """Handle a user message from Ink: start a new query."""
+        """Handle a user message from Ink.
+
+        If a query is currently running, the message is enqueued and will
+        be processed after the current query completes. Otherwise, a new
+        query is started immediately.
+        """
         if not text.strip():
             return
 
-        # Cancel any running query
-        if self._query_task is not None and not self._query_task.done():
-            self._query_task.cancel()
-
-        self._query_task = asyncio.create_task(self._run_query(text))
+        if self._is_query_running:
+            # Enqueue the message for later processing
+            self._message_queue.append(text)
+            await self.transport.send_event(CoreToInk.QUERY_QUEUED.value, {"text": text})
+            logger.info("IPC: query queued (queue depth: %d)", len(self._message_queue))
+        else:
+            self._query_task = asyncio.create_task(self._run_query(text))
 
     async def _handle_interrupt(self) -> None:
         """Handle Ctrl+C from Ink: cancel the current query."""
@@ -159,6 +171,7 @@ class IPCBridge:
         if result.type == ResultType.TEXT:
             await self.transport.send_event("query.info", {"message": result.content["message"]})
         elif result.type == ResultType.CLEAR:
+            self._message_queue.clear()
             self._context = create_store_context()
             self._runner = QueryRunner(
                 model=self.model,
@@ -193,6 +206,7 @@ class IPCBridge:
         """Run a query and stream events to Ink via IPC."""
         self._tool_start_times.clear()
         self._agent_start_times.clear()
+        self._is_query_running = True
 
         # Inject direct IPC emit callback so long-running sub-tools
         # (e.g. AgentTool) can stream events in real-time without
@@ -216,6 +230,18 @@ class IPCBridge:
         except Exception as e:
             logger.exception("IPC: query error")
             await self.transport.send_event(CoreToInk.QUERY_ERROR.value, {"content": str(e)})
+        finally:
+            self._is_query_running = False
+            # Process next message in queue if any
+            await self._process_queue()
+
+    async def _process_queue(self) -> None:
+        """Process the next queued user message, if any."""
+        if self._message_queue:
+            next_message = self._message_queue.pop(0)
+            # Notify frontend that the queued message is now being processed
+            await self.transport.send_event(CoreToInk.QUERY_DEQUEUE.value, {"text": next_message})
+            self._query_task = asyncio.create_task(self._run_query(next_message))
 
     # Mapping from sub-agent event types to agent-specific IPC message types.
     # Events with source="agent" use these instead of the parent QUERY_EVENT_MAP,

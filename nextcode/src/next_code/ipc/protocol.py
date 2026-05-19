@@ -34,6 +34,8 @@ class CoreToInk(str, Enum):
     QUERY_COMPLETE = "query.complete"
     QUERY_INFO = "query.info"
     QUERY_CLEARED = "query.cleared"
+    QUERY_QUEUED = "query.queued"
+    QUERY_DEQUEUE = "query.dequeue"
 
     # State synchronization
     STATE_UPDATE = "state.update"
