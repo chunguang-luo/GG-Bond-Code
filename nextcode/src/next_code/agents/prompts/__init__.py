@@ -11,12 +11,15 @@ from ...state.context import ToolUseContext
 from .explore import EXPLORE_SYSTEM_PROMPT
 from .plan import PLAN_SYSTEM_PROMPT
 from .general import GENERAL_SYSTEM_PROMPT
+from .verification import VERIFICATION_SYSTEM_PROMPT, VERIFICATION_CRITICAL_REMINDER
+from .guide import build_guide_system_prompt
 
 # 内置 Agent 类型的 prompt 映射
 _BUILTIN_PROMPTS: dict[str, str] = {
     "Explore": EXPLORE_SYSTEM_PROMPT,
     "Plan": PLAN_SYSTEM_PROMPT,
     "general-purpose": GENERAL_SYSTEM_PROMPT,
+    "Verification": VERIFICATION_SYSTEM_PROMPT,
 }
 
 
@@ -38,11 +41,12 @@ def build_agent_system_prompt(
     elif agent_def.agent_type in _BUILTIN_PROMPTS:
         parts.append(_BUILTIN_PROMPTS[agent_def.agent_type])
 
-    # 只读模式约束
+    # 只读模式约束 — 仅当 Agent prompt 中未自行声明 CRITICAL 段时追加
     if agent_def.disallowed_tools:
         write_tools = {"Edit", "Write", "NotebookEdit"}
         disallowed_set = set(agent_def.disallowed_tools)
-        if write_tools & disallowed_set:
+        already_has_critical = any("CRITICAL" in p for p in parts)
+        if write_tools & disallowed_set and not already_has_critical:
             parts.append(
                 "=== CRITICAL: READ-ONLY MODE ===\n"
                 "You CANNOT edit, write, or create files. "

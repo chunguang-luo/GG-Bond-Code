@@ -172,7 +172,8 @@ function MessageItem({ msg }: { msg: DisplayMessage }) {
 
     case "agent_start": {
       const agentMeta = msg.metadata as { agent_type?: string; description?: string; prompt?: string } | undefined;
-      const agentType = agentMeta?.agent_type || "Agent";
+      const rawType = agentMeta?.agent_type || "Agent";
+      const agentType = rawType === "general-purpose" ? rawType : `${rawType} Agent`;
       const agentPrompt = agentMeta?.prompt || "";
       return (
         <Box marginTop={1} marginLeft={2} flexDirection="column">
@@ -219,7 +220,8 @@ function MessageItem({ msg }: { msg: DisplayMessage }) {
 
     case "agent_result": {
       const resultMeta = msg.metadata as { _elapsed?: string; agent_type?: string } | undefined;
-      const agentType = resultMeta?.agent_type || "Agent";
+      const rawType = resultMeta?.agent_type || "Agent";
+      const agentType = rawType === "general-purpose" ? rawType : `${rawType} Agent`;
       const elapsed = resultMeta?._elapsed || "";
       return (
         <Box marginLeft={2} flexDirection="column">

@@ -141,7 +141,11 @@ class QueryRunner:
 
         # Build full system prompt
         static_sections = build_system_prompt(cwd=ctx.get_state("cwd"))
-        dynamic_sections = [format_system_context(system_ctx)] if system_ctx else []
+        # Omit git status context for agents that don't need it
+        omit_git = ctx.get_state("omit_git_status") or False
+        dynamic_sections = (
+            [format_system_context(system_ctx)] if system_ctx and not omit_git else []
+        )
 
         full_system_prompt = [
             *static_sections,
@@ -150,8 +154,22 @@ class QueryRunner:
 
         # Prepare messages with user context
         messages: list[dict[str, Any]] = ctx.get_state("messages") or []
+        # Inject critical reminder before user message if set (e.g. Verification Agent)
+        if getattr(ctx, "critical_reminder", None):
+            messages.append({
+                "role": "user",
+                "content": f"[system] {ctx.critical_reminder}",
+            })
+            messages.append({"role": "assistant", "content": "Understood."})
         messages.append({"role": "user", "content": user_message})
-        messages = prepend_user_context(messages, user_ctx)
+        # Inject user context — omit NEXTCODE.md for agents that don't need it
+        omit_nextcode_md = ctx.get_state("omit_nextcode_md") or False
+        if omit_nextcode_md:
+            # Keep date but drop NEXTCODE.md
+            filtered_ctx = {k: v for k, v in user_ctx.items() if k != "nextcode_md"}
+            messages = prepend_user_context(messages, filtered_ctx)
+        else:
+            messages = prepend_user_context(messages, user_ctx)
 
         # Check if compaction is needed before starting
         if self._enable_compaction:

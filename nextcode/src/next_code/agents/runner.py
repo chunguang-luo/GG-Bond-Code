@@ -88,6 +88,11 @@ async def run_agent(
         avoid_permission_prompts=is_async,
     )
 
+    # Set critical reminder for agents that need per-turn constraint reinforcement
+    if agent_def.agent_type == "Verification":
+        from .prompts.verification import VERIFICATION_CRITICAL_REMINDER
+        agent_context.critical_reminder = VERIFICATION_CRITICAL_REMINDER
+
     # ── Phase 5: 对话循环 ──────────────────────────────────────
 
     # 用一个独立的 Store 存储子 Agent 的消息
@@ -95,6 +100,10 @@ async def run_agent(
     # 初始化消息历史
     if initial_messages:
         agent_store.set("messages", initial_messages)
+
+    # Context optimization flags — read by QueryRunner.run()
+    agent_store.set("omit_nextcode_md", agent_def.omit_nextcode_md)
+    agent_store.set("omit_git_status", agent_def.omit_git_status)
 
     # 创建子 Agent 专用的 QueryRunner
     max_turns = agent_def.max_turns or 50

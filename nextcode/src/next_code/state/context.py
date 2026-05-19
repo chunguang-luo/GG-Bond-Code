@@ -70,6 +70,10 @@ class ToolUseContext:
     """Current Agent nesting depth. 0 = main agent, 1 = sub-agent, 2 = sub-sub-agent.
     Used to enforce a maximum nesting depth of 2."""
 
+    critical_reminder: str | None = None
+    """If set, injected before every user message in the conversation loop.
+    Used by agents like Verification to prevent constraint drift in long conversations."""
+
     def get_set_state_for_tasks(self) -> Callable[[str, Any], None]:
         """Get the task-penetrating setter, falling back to set_state."""
         return self.set_state_for_tasks or self.set_state

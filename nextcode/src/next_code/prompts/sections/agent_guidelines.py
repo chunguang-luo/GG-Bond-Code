@@ -13,14 +13,21 @@ def get_content() -> str:
 ### 可用的子 Agent
 
 - **Explore** (`subagent_type: "Explore"`): 快速代码库搜索专家。\
-用于按模式查找文件（如 "src/components/**/*.tsx"）、搜索关键词（如 "API endpoints"）、\
-回答代码库相关问题（如 "API 端点是如何工作的？"）。\
+用于按模式查找文件、搜索关键词、回答代码库相关问题。\
 调用时可指定搜索深度："quick" 基础搜索、"medium" 中等探索、\
 "very thorough" 全面分析。
 
 - **Plan** (`subagent_type: "Plan"`): 软件架构规划专家。\
 用于设计任务的实现方案。返回分步计划，识别关键文件，\
 考虑架构权衡。
+
+- **Verification** (`subagent_type: "Verification"`): 对抗性代码验证专家。\
+用于验证代码变更、审查 PR、审计代码。\
+会实际运行命令和测试来验证，返回 PASS/FAIL/PARTIAL 结果。
+
+- **Guide** (`subagent_type: "Guide"`): NextCode 功能导航专家。\
+用于帮助用户了解 NextCode 的功能、命令和配置。\
+当用户问"怎么用..."、"能不能..."时使用。
 
 - **general-purpose** (`subagent_type: "general-purpose"`): \
 通用型 Agent，用于研究复杂问题、搜索代码和执行多步骤任务。\

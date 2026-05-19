@@ -31,7 +31,7 @@ def get_builtin_agents() -> list[AgentDefinition]:
             source=AgentSource.BUILTIN,
             disallowed_tools=["Edit", "Write", "NotebookEdit", "Agent"],
             model=None,  # inherit from parent
-            omit_claude_md=True,
+            omit_nextcode_md=True,
             omit_git_status=True,
         ),
         AgentDefinition(
@@ -43,7 +43,41 @@ def get_builtin_agents() -> list[AgentDefinition]:
             "architectural trade-offs.",
             source=AgentSource.BUILTIN,
             disallowed_tools=["Edit", "Write", "NotebookEdit"],
-            omit_claude_md=True,
+            omit_nextcode_md=True,
             omit_git_status=True,
         ),
+        AgentDefinition(
+            agent_type="Verification",
+            name="Verification",
+            description="Adversarial code review agent that finds problems, "
+            "not confirms correctness. Use for verifying changes, reviewing PRs, "
+            "or auditing code. Actually runs commands and tests rather than just "
+            "reading code. Returns PASS/FAIL/PARTIAL verdict.",
+            source=AgentSource.BUILTIN,
+            disallowed_tools=["Edit", "Write", "NotebookEdit"],
+            model=None,  # inherit — needs strong reasoning
+            permission_mode="dontAsk",
+            omit_nextcode_md=True,
+            omit_git_status=True,
+        ),
+        AgentDefinition(
+            agent_type="Guide",
+            name="Guide",
+            description="Help users understand NextCode features and capabilities. "
+            "Use when users ask 'how do I...', 'can NextCode...', or need help "
+            "navigating commands, skills, and configuration.",
+            source=AgentSource.BUILTIN,
+            tools=["Glob", "Grep", "Read", "WebFetch", "WebSearch"],
+            model=None,  # inherit
+            permission_mode="dontAsk",
+            omit_nextcode_md=True,
+            omit_git_status=True,
+            get_system_prompt=_build_guide_prompt,
+        ),
     ]
+
+
+def _build_guide_prompt() -> str:
+    """Build Guide Agent's dynamic system prompt."""
+    from .prompts.guide import build_guide_system_prompt
+    return build_guide_system_prompt(context=None)

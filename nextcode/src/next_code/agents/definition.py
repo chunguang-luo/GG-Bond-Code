@@ -42,7 +42,7 @@ class AgentDefinition:
     max_turns: int | None = None  # 最大对话轮次
 
     # ── 上下文优化 ──────────────────────────────────────────────
-    omit_claude_md: bool = False  # 省略 CLAUDE.md（为只读 Agent 省 token）
+    omit_nextcode_md: bool = False  # 省略 NEXTCODE.md（为只读 Agent 省 token）
     omit_git_status: bool = False  # 省略 gitStatus
 
     # ── 运行模式 ──────────────────────────────────────────────
