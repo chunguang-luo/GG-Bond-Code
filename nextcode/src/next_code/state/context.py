@@ -48,6 +48,7 @@ class ToolUseContext:
     registry: ToolRegistry = field(default_factory=ToolRegistry)
     abort: asyncio.Event = field(default_factory=asyncio.Event)
     file_cache: FileStateCache = field(default_factory=FileStateCache)
+    command_registry: Any = None  # CommandRegistry — use Any to avoid circular import
 
     # ── Identity ──────────────────────────────────────────────────────
     agent_id: str | None = None

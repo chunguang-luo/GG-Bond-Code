@@ -43,6 +43,9 @@ export const CoreToInk = {
   COMPACT_STARTED: "compact.started",
   COMPACT_COMPLETE: "compact.complete",
 
+  // Command list sync
+  COMMANDS_UPDATE: "commands.update",
+
   // Heartbeat
   PING: "ping",
 } as const;
@@ -126,6 +129,17 @@ export interface ContextInfoPayload {
   effectiveWindow: number;
   warningState: string;
   percentLeft: number;
+}
+
+export interface CommandInfo {
+  name: string;
+  description: string;
+  source: string;
+  aliases: string[];
+}
+
+export interface CommandsUpdatePayload {
+  commands: CommandInfo[];
 }
 
 export interface WelcomePayload {

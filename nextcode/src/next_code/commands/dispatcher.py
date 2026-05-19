@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from .types import (
     CommandContext,
     CommandResult,
     CommandType,
+    LocalCommand,
+    PromptCommand,
     ResultType,
 )
 from .registry import CommandRegistry
@@ -17,9 +21,8 @@ class CommandDispatcher:
     Responsibilities:
     - Parse raw input into command name + args
     - Look up command in registry
-    - Execute the handler with a CommandContext
+    - Execute LocalCommand handlers or PromptCommand prompt generators
     - Handle unknown commands with similar-command suggestions
-    - Reject PromptCommand invocations in Phase 1
     """
 
     def __init__(self, registry: CommandRegistry) -> None:
@@ -64,17 +67,44 @@ class CommandDispatcher:
                 },
             )
 
-        # Phase 1: reject PromptCommand
-        if command.command_type == CommandType.PROMPT:
+        # Dispatch by command type
+        if command.command_type == CommandType.LOCAL:
+            return await command.handler(args, context)
+        elif command.command_type == CommandType.PROMPT:
+            return await self._dispatch_prompt(command, args, context)
+
+        return CommandResult(
+            type=ResultType.TEXT,
+            content={"message": f"Unknown command type: {command.command_type}"},
+        )
+
+    async def _dispatch_prompt(
+        self,
+        command: PromptCommand,
+        args: str,
+        context: CommandContext,
+    ) -> CommandResult:
+        """Dispatch a PromptCommand by calling its get_prompt generator."""
+        if command.get_prompt is None:
             return CommandResult(
                 type=ResultType.TEXT,
-                content={
-                    "message": f"Command '{cmd_name}' is not yet implemented (prompt-based).",
-                },
+                content={"message": f"Skill '{command.name}' has no prompt generator."},
             )
 
-        # Execute handler
-        return await command.handler(args, context)
+        prompt_blocks = await command.get_prompt(args, context)
+        return CommandResult(
+            type=ResultType.PROMPT,
+            content={
+                "prompt_blocks": prompt_blocks,
+                "command_name": command.name,
+                "source": command.source,
+                "allowed_tools": command.allowed_tools,
+                "model": command.model,
+                "context": command.context,
+                "agent": command.agent,
+                "effort": command.effort,
+            },
+        )
 
     def _find_similar_command(self, cmd: str) -> str | None:
         """Find similar command suggestion using prefix matching."""

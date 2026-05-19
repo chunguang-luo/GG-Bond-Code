@@ -52,6 +52,9 @@ class CoreToInk(str, Enum):
     COMPACT_STARTED = "compact.started"
     COMPACT_COMPLETE = "compact.complete"
 
+    # Command list sync
+    COMMANDS_UPDATE = "commands.update"
+
     # Heartbeat
     PING = "ping"
 

@@ -1,79 +1,170 @@
 /**
  * InputBar — user input component with prompt.
  *
- * Handles text input, Enter to submit, Tab to complete slash commands.
+ * Handles text input, Enter to submit, Tab to complete slash commands,
+ * arrow keys to move cursor, and displays completion suggestions.
  */
 
-import React from "react";
+import React, { useMemo } from "react";
 import { Box, Text, useInput } from "ink";
+import { CommandInfo } from "../ipc/protocol";
 
-const SLASH_COMMANDS = [
-  "/help",
-  "/clear",
-  "/compact",
-  "/context",
-  "/thinking",
-  "/model",
-  "/log",
-  "/exit",
-  "/quit",
-];
+interface InputState {
+  value: string;
+  cursor: number;
+}
 
 interface InputBarProps {
-  inputValue: string;
-  setInputValue: (value: string | ((prev: string) => string)) => void;
+  inputState: InputState;
+  setInputState: (value: InputState | ((prev: InputState) => InputState)) => void;
   onSubmit: (text: string) => void;
   disabled?: boolean;
   model?: string;
+  commands?: CommandInfo[];
 }
 
-export function InputBar({ inputValue, setInputValue, onSubmit, disabled, model }: InputBarProps) {
+export function InputBar({
+  inputState,
+  setInputState,
+  onSubmit,
+  disabled,
+  model,
+  commands = [],
+}: InputBarProps) {
+  // Build a flat list of all command names + aliases for Tab completion
+  const allCommandNames = useMemo(() => {
+    const names: string[] = [];
+    for (const cmd of commands) {
+      names.push(cmd.name);
+      for (const alias of cmd.aliases) {
+        names.push(alias);
+      }
+    }
+    return names.sort();
+  }, [commands]);
+
+  // Build name→description lookup for the suggestion list
+  const commandDescMap = useMemo(() => {
+    const map = new Map<string, { description: string; source: string }>();
+    for (const cmd of commands) {
+      map.set(cmd.name, { description: cmd.description, source: cmd.source });
+      for (const alias of cmd.aliases) {
+        map.set(alias, { description: cmd.description, source: cmd.source });
+      }
+    }
+    return map;
+  }, [commands]);
+
+  // Compute matching commands for the current input
+  const matchingCommands = useMemo(() => {
+    if (!inputState.value.startsWith("/")) return [];
+    const matches = allCommandNames.filter((c) => c.startsWith(inputState.value));
+    return [...new Set(matches)].slice(0, 8);
+  }, [inputState.value, allCommandNames]);
+
   useInput(
     (input, key) => {
       if (key.return) {
-        if (inputValue.trim()) {
-          onSubmit(inputValue);
-          setInputValue("");
+        if (inputState.value.trim()) {
+          onSubmit(inputState.value);
+          setInputState({ value: "", cursor: 0 });
         }
       } else if (key.tab) {
         // Tab-complete slash commands
-        if (inputValue.startsWith("/")) {
-          const matches = SLASH_COMMANDS.filter((c) => c.startsWith(inputValue));
+        if (inputState.value.startsWith("/")) {
+          const matches = allCommandNames.filter((c) =>
+            c.startsWith(inputState.value)
+          );
           if (matches.length === 1) {
-            setInputValue(matches[0]);
+            setInputState({ value: matches[0], cursor: matches[0].length });
           } else if (matches.length > 1) {
-            // Find common prefix
             let prefix = matches[0];
             for (const m of matches.slice(1)) {
               while (!m.startsWith(prefix) && prefix.length > 0) {
                 prefix = prefix.slice(0, -1);
               }
             }
-            if (prefix.length > inputValue.length) {
-              setInputValue(prefix);
+            if (prefix.length > inputState.value.length) {
+              setInputState({ value: prefix, cursor: prefix.length });
             }
           }
         }
+      } else if (key.leftArrow) {
+        setInputState((prev) => ({ ...prev, cursor: Math.max(0, prev.cursor - 1) }));
+      } else if (key.rightArrow) {
+        setInputState((prev) => ({ ...prev, cursor: Math.min(prev.value.length, prev.cursor + 1) }));
       } else if (key.backspace || key.delete) {
-        setInputValue((prev) => prev.slice(0, -1));
+        // Ink maps most terminals' Backspace key (\x7f) to key.delete=true,
+        // and Ctrl+H (\b) to key.backspace=true. Both should delete before cursor.
+        // The real forward-Delete key (\x1b[3~) also maps to key.delete — but
+        // Backspace is far more common, so we treat both as "delete before cursor".
+        setInputState((prev) => {
+          if (prev.cursor > 0) {
+            return {
+              value: prev.value.slice(0, prev.cursor - 1) + prev.value.slice(prev.cursor),
+              cursor: prev.cursor - 1,
+            };
+          }
+          return prev;
+        });
+      } else if (key.home) {
+        setInputState((prev) => ({ ...prev, cursor: 0 }));
+      } else if (key.end) {
+        setInputState((prev) => ({ ...prev, cursor: prev.value.length }));
       } else if (input && !key.ctrl && !key.meta) {
-        setInputValue((prev) => prev + input);
+        // Insert text at cursor position (input may be multi-char from paste)
+        setInputState((prev) => ({
+          value: prev.value.slice(0, prev.cursor) + input + prev.value.slice(prev.cursor),
+          cursor: prev.cursor + input.length,
+        }));
       }
     },
     { isActive: !disabled }
   );
 
+  const { value, cursor } = inputState;
+  const leftOfCursor = value.slice(0, cursor);
+  const rightOfCursor = value.slice(cursor);
+
   return (
-    <Box borderStyle="single" borderColor="green" paddingLeft={1} paddingRight={1}>
-      <Text color="green" bold>
-        {"nextcode "}
-      </Text>
-      <Text color="gray">{"❯ "}</Text>
-      <Text>{inputValue}</Text>
-      {!disabled && <Text color="green">{"▎"}</Text>}
-      {disabled && (
-        <Text dimColor>{" thinking..."}</Text>
+    <Box flexDirection="column">
+      {/* Command suggestions */}
+      {matchingCommands.length > 0 && (
+        <Box flexDirection="column" paddingLeft={2} paddingBottom={0}>
+          {matchingCommands.map((cmd) => {
+            const info = commandDescMap.get(cmd);
+            const isSkill = info?.source && info.source !== "builtin";
+            return (
+              <Box key={cmd}>
+                <Text color={isSkill ? "cyan" : "green"} bold>
+                  {cmd}
+                </Text>
+                <Text dimColor>
+                  {"  "}
+                  {info?.description || ""}
+                </Text>
+                {isSkill && (
+                  <Text dimColor color="magenta">
+                    {" "}
+                    [{info.source}]
+                  </Text>
+                )}
+              </Box>
+            );
+          })}
+        </Box>
       )}
+      {/* Input line */}
+      <Box borderStyle="single" borderColor="green" paddingLeft={1} paddingRight={1}>
+        <Text color="green" bold>
+          {"nextcode "}
+        </Text>
+        <Text color="gray">{"❯ "}</Text>
+        <Text>{leftOfCursor}</Text>
+        {!disabled && <Text color="green" inverse>{rightOfCursor.length > 0 ? rightOfCursor[0] : " "}</Text>}
+        <Text>{rightOfCursor.length > 0 ? rightOfCursor.slice(1) : ""}</Text>
+        {disabled && <Text dimColor>{" thinking..."}</Text>}
+      </Box>
     </Box>
   );
 }

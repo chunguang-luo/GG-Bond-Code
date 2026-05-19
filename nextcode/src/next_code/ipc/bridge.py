@@ -55,6 +55,14 @@ class IPCBridge:
             enable_streaming_tools=True,
         )
 
+        # Command dispatcher
+        from ..commands import create_builtin_registry, CommandDispatcher
+        self._command_registry = create_builtin_registry()
+        self._command_dispatcher = CommandDispatcher(self._command_registry)
+
+        # Wire command registry into ToolUseContext so SkillTool can access it
+        self._context.command_registry = self._command_registry
+
         # Pending permission requests: requestId → Future
         self._pending_permissions: dict[str, asyncio.Future[PermissionDecision]] = {}
 
@@ -64,10 +72,12 @@ class IPCBridge:
         # Track if a query is running
         self._query_task: asyncio.Task | None = None
 
-        # Command dispatcher
-        from ..commands import create_builtin_registry, CommandDispatcher
-        self._command_registry = create_builtin_registry()
-        self._command_dispatcher = CommandDispatcher(self._command_registry)
+        # Load skills (async — fire and forget, skills register when ready)
+        self._skills_loaded = False
+
+        # Conditional skill activation
+        from ..skills.conditional import ConditionalSkillManager
+        self._conditional_manager = ConditionalSkillManager()
 
         # Register message handler
         self.transport.on_message(self._handle_message)
@@ -165,6 +175,14 @@ class IPCBridge:
             if result.content.get("suggestion"):
                 hint += f"\nDid you mean: {result.content['suggestion']}?"
             await self.transport.send_event("query.info", {"message": hint})
+        elif result.type == ResultType.PROMPT:
+            # Skill command: inject the generated prompt as a user query
+            prompt_blocks = result.content.get("prompt_blocks", [])
+            prompt_text = "\n".join(
+                block.get("text", "") for block in prompt_blocks if block.get("type") == "text"
+            )
+            if prompt_text:
+                self._query_task = asyncio.create_task(self._run_query(prompt_text))
 
     # ── Query execution ────────────────────────────────────────────────────
 
@@ -219,6 +237,8 @@ class IPCBridge:
                 "toolInput": event.tool_input,
                 "toolPurpose": event.tool_purpose,
             }
+            # Check conditional skill activation after file operation tools
+            self._check_conditional_activation(event.tool_name, event.tool_input)
 
         elif event.type == "tool_result":
             elapsed_ms = 0
@@ -240,6 +260,80 @@ class IPCBridge:
             payload = {"content": event.content, "metadata": event.metadata}
 
         await self.transport.send_event(msg_type.value, payload)
+
+    # ── Conditional skill activation ────────────────────────────────────────
+
+    # Tools that operate on files and should trigger conditional skill checks
+    _FILE_TOOLS = frozenset({
+        "Bash", "Read", "Edit", "Write", "Glob", "Grep",
+    })
+
+    # Parameter keys that carry file paths for each tool
+    _FILE_PARAM_KEYS: dict[str, list[str]] = {
+        "Read": ["file_path"],
+        "Edit": ["file_path"],
+        "Write": ["file_path"],
+        "Glob": ["path"],
+        "Grep": ["path"],
+        "Bash": ["command"],  # will extract paths from command string heuristically
+    }
+
+    def _check_conditional_activation(self, tool_name: str, tool_input: dict) -> None:
+        """After a file tool executes, check if any pending skills should activate."""
+        if tool_name not in self._FILE_TOOLS:
+            return
+        if not self._conditional_manager.get_pending():
+            return
+
+        file_paths = self._extract_file_paths(tool_name, tool_input)
+        if not file_paths:
+            return
+
+        cwd = Store().get("cwd", "")
+        activated = self._conditional_manager.activate_for_paths(file_paths, cwd)
+
+        if activated:
+            # Discover any new skill directories near the activated paths
+            from ..skills.loader import discover_skill_dirs_for_paths
+            discovered = discover_skill_dirs_for_paths(file_paths, cwd)
+            if discovered:
+                asyncio.create_task(self._load_discovered_skills(discovered))
+
+    def _extract_file_paths(self, tool_name: str, tool_input: dict) -> list[str]:
+        """Extract file paths from tool input parameters."""
+        paths: list[str] = []
+        param_keys = self._FILE_PARAM_KEYS.get(tool_name, [])
+
+        for key in param_keys:
+            value = tool_input.get(key, "")
+            if isinstance(value, str) and value:
+                if tool_name == "Bash":
+                    # For Bash, we don't try to extract paths from commands
+                    # (too unreliable). Just skip.
+                    continue
+                paths.append(value)
+            elif isinstance(value, list):
+                paths.extend(str(v) for v in value if v)
+
+        return paths
+
+    async def _load_discovered_skills(self, skill_dirs: list) -> None:
+        """Load skills from newly discovered directories."""
+        from ..skills.loader import load_skills_from_dir
+        from ..commands.types import PromptCommand
+
+        for skill_dir in skill_dirs:
+            commands = await load_skills_from_dir(skill_dir, source="discovered", loaded_from="skills")
+            for cmd in commands:
+                try:
+                    self._command_registry.register_override(cmd)
+                    if isinstance(cmd, PromptCommand) and cmd.paths:
+                        self._conditional_manager.register_conditional(cmd)
+                except ValueError:
+                    pass  # already registered
+
+        from ..commands.cache import clear_command_caches
+        clear_command_caches()
 
     # ── Permission flow ────────────────────────────────────────────────────
 
@@ -311,4 +405,56 @@ class IPCBridge:
             "model": model,
             "cwd": cwd,
             "projectRoot": cwd,
+        })
+
+        # Send initial command list (builtins only at this point)
+        await self._send_commands_update()
+
+        # Load skills after session is ready (non-blocking)
+        if not self._skills_loaded:
+            self._skills_loaded = True
+            asyncio.create_task(self._load_skills(cwd))
+
+    async def _load_skills(self, cwd: str) -> None:
+        """Load skills from user and project directories."""
+        try:
+            await self._command_registry.load_skills(cwd)
+            # Register conditional skills (those with paths) in the manager
+            from ..commands.types import PromptCommand
+            for cmd in self._command_registry.all_commands():
+                if isinstance(cmd, PromptCommand) and cmd.paths:
+                    self._conditional_manager.register_conditional(cmd)
+            # Clear command caches after skill set changes
+            from ..commands.cache import clear_command_caches
+            clear_command_caches()
+            # Send updated command list to frontend (includes skills now)
+            await self._send_commands_update()
+            logger.info("Skills loaded for cwd=%s", cwd)
+        except Exception:
+            logger.exception("Failed to load skills")
+
+    async def _send_commands_update(self) -> None:
+        """Send the current command list to the frontend."""
+        from ..commands.types import PromptCommand
+
+        commands = []
+        for cmd in self._command_registry.all_commands():
+            # Only include user-invocable, non-hidden commands
+            if not getattr(cmd, "user_invocable", True):
+                continue
+            if getattr(cmd, "is_hidden", False):
+                continue
+            entry = {
+                "name": cmd.name,
+                "description": cmd.description,
+                "source": getattr(cmd, "source", "builtin"),
+                "aliases": list(cmd.aliases),
+            }
+            # Include when_to_use hint for conditional skills that are activated
+            if isinstance(cmd, PromptCommand) and cmd.when_to_use:
+                entry["whenToUse"] = cmd.when_to_use
+            commands.append(entry)
+
+        await self.transport.send_event(CoreToInk.COMMANDS_UPDATE.value, {
+            "commands": commands,
         })

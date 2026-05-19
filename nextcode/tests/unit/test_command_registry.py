@@ -1,7 +1,7 @@
 """Unit tests for CommandRegistry."""
 
 from next_code.commands.registry import CommandRegistry
-from next_code.commands.types import LocalCommand, CommandResult, ResultType
+from next_code.commands.types import LocalCommand, PromptCommand, CommandResult, ResultType
 
 
 def _make_command(name: str, description: str = "Test", aliases: list[str] | None = None):
@@ -89,3 +89,62 @@ class TestCommandRegistry:
         registry.register(_make_command("/exit", aliases=["/quit"]))
         assert len(list(registry.all_commands())) == 3
         assert len(registry.all_names()) == 4  # /help, /clear, /exit, /quit
+
+    def test_register_override_replaces_command(self):
+        """register_override replaces an existing command of the same name."""
+        registry = CommandRegistry()
+        registry.register(_make_command("/test", description="Original"))
+
+        # Override with a new command
+        override = _make_command("/test", description="Override")
+        registry.register_override(override)
+
+        assert registry.lookup("/test") is override
+        assert registry.lookup("/test").description == "Override"
+
+    def test_register_override_replaces_aliases(self):
+        """register_override removes old command's aliases."""
+        registry = CommandRegistry()
+        registry.register(_make_command("/exit", aliases=["/quit"]))
+
+        # Override with new command, no aliases
+        override = _make_command("/exit", description="New exit")
+        registry.register_override(override)
+
+        assert registry.lookup("/exit") is override
+        # Old alias /quit should no longer point to the old command
+        assert registry.lookup("/quit") is None or registry.lookup("/quit") is override
+
+    def test_register_override_with_new_aliases(self):
+        """register_override registers new aliases for the override."""
+        registry = CommandRegistry()
+        registry.register(_make_command("/test", aliases=["/t"]))
+
+        override = _make_command("/test", description="New", aliases=["/x"])
+        registry.register_override(override)
+
+        assert registry.lookup("/x") is override
+
+    def test_register_override_skill_overrides_local(self):
+        """A PromptCommand can override a LocalCommand via register_override."""
+        registry = CommandRegistry()
+        registry.register(_make_command("/review", description="Builtin review"))
+
+        async def handler(args, ctx):
+            return CommandResult(type=ResultType.TEXT)
+
+        async def get_prompt(args, ctx):
+            return [{"type": "text", "text": "review"}]
+
+        skill_cmd = PromptCommand(
+            name="/review",
+            description="Skill review",
+            handler=handler,
+            source="skills",
+            get_prompt=get_prompt,
+        )
+        registry.register_override(skill_cmd)
+
+        result = registry.lookup("/review")
+        assert result is skill_cmd
+        assert result.description == "Skill review"

@@ -19,6 +19,7 @@ class TestResultType:
         assert ResultType.CONTEXT_INFO.value == "context_info"
         assert ResultType.COMPACT_COMPLETE.value == "compact_complete"
         assert ResultType.UNKNOWN_COMMAND.value == "unknown_command"
+        assert ResultType.PROMPT.value == "prompt"
 
 
 class TestCommandResult:
@@ -60,6 +61,51 @@ class TestPromptCommand:
 
         cmd = PromptCommand(name="/skill", description="Skill", handler=handler)
         assert cmd.command_type == CommandType.PROMPT
+
+    def test_skill_fields_defaults(self):
+        async def handler(args, ctx):
+            return CommandResult(type=ResultType.TEXT)
+
+        cmd = PromptCommand(name="/skill", description="Skill", handler=handler)
+        assert cmd.source == "builtin"
+        assert cmd.loaded_from is None
+        assert cmd.progress_message == "running"
+        assert cmd.arg_names == []
+        assert cmd.allowed_tools == []
+        assert cmd.model is None
+        assert cmd.context == "inline"
+        assert cmd.agent is None
+        assert cmd.effort is None
+        assert cmd.when_to_use is None
+        assert cmd.user_invocable is True
+        assert cmd.is_hidden is False
+        assert cmd.paths == []
+        assert cmd.get_prompt is None
+
+    def test_skill_fields_custom(self):
+        async def handler(args, ctx):
+            return CommandResult(type=ResultType.TEXT)
+
+        async def get_prompt(args, ctx):
+            return [{"type": "text", "text": "hello"}]
+
+        cmd = PromptCommand(
+            name="/review",
+            description="Review code",
+            handler=handler,
+            source="skills",
+            loaded_from="skills",
+            model="opus",
+            context="fork",
+            allowed_tools=["Bash"],
+            get_prompt=get_prompt,
+        )
+        assert cmd.source == "skills"
+        assert cmd.loaded_from == "skills"
+        assert cmd.model == "opus"
+        assert cmd.context == "fork"
+        assert cmd.allowed_tools == ["Bash"]
+        assert cmd.get_prompt is not None
 
 
 class TestCommandContext:

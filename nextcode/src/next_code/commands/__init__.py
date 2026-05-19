@@ -10,9 +10,11 @@ from .types import (
     CommandContext,
     CommandType,
     ResultType,
+    PromptGenerator,
 )
 from .registry import CommandRegistry
 from .dispatcher import CommandDispatcher
+from .cache import memoize_async, clear_command_caches
 
 
 def create_builtin_registry() -> CommandRegistry:
@@ -51,7 +53,10 @@ __all__ = [
     "CommandContext",
     "CommandType",
     "ResultType",
+    "PromptGenerator",
     "CommandRegistry",
     "CommandDispatcher",
     "create_builtin_registry",
+    "memoize_async",
+    "clear_command_caches",
 ]

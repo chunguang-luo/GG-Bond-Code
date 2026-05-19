@@ -10,7 +10,7 @@
 import React, { useState, useCallback, useEffect, useRef } from "react";
 import { Box, Text, useInput, useApp } from "ink";
 import { IPCTransport } from "./ipc/transport";
-import { CoreToInk, InkToCore, Message } from "./ipc/protocol";
+import { CoreToInk, InkToCore, Message, CommandInfo } from "./ipc/protocol";
 import { MessageList } from "./components/message-list";
 import { InputBar } from "./components/input-bar";
 import { PermissionDialog } from "./components/permission-dialog";
@@ -77,12 +77,13 @@ function useElapsedTime(startMs: number | null): number {
 export function App({ transport }: AppProps) {
   const { exit } = useApp();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
-  const [inputValue, setInputValue] = useState("");
+  const [inputState, setInputState] = useState({ value: "", cursor: 0 });
   const [isQueryRunning, setIsQueryRunning] = useState(false);
   const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null);
   const [showThinking, setShowThinking] = useState(false);
   const [model, setModel] = useState("unknown");
   const [cwd, setCwd] = useState("unknown");
+  const [commands, setCommands] = useState<CommandInfo[]>([]);
   const [renderTick, setRenderTick] = useState(0);
   const [showWelcome, setShowWelcome] = useState(true);
 
@@ -141,6 +142,12 @@ export function App({ transport }: AppProps) {
         case CoreToInk.SESSION_READY: {
           setModel((msg.payload as { model?: string }).model || "unknown");
           setCwd((msg.payload as { cwd?: string }).cwd || "unknown");
+          break;
+        }
+
+        case CoreToInk.COMMANDS_UPDATE: {
+          const cmds = (msg.payload as { commands?: CommandInfo[] }).commands || [];
+          setCommands(cmds);
           break;
         }
 
@@ -442,11 +449,12 @@ export function App({ transport }: AppProps) {
         </Box>
       )}
       <InputBar
-        inputValue={inputValue}
-        setInputValue={setInputValue}
+        inputState={inputState}
+        setInputState={setInputState}
         onSubmit={handleSubmit}
         disabled={isQueryRunning || !!permissionRequest}
         model={model}
+        commands={commands}
       />
       {permissionRequest && (
         <PermissionDialog

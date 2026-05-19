@@ -166,8 +166,9 @@ def create_default_registry() -> ToolRegistry:
     from .file_write import FileWriteTool
     from .glob import GlobTool
     from .grep import GrepTool
+    from .skill import SkillTool
 
     registry = ToolRegistry()
-    for tool_cls in [BashTool, FileReadTool, FileEditTool, FileWriteTool, GlobTool, GrepTool]:
+    for tool_cls in [BashTool, FileReadTool, FileEditTool, FileWriteTool, GlobTool, GrepTool, SkillTool]:
         registry.register(tool_cls())
     return registry

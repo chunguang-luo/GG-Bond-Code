@@ -84,7 +84,8 @@ class TestCommandDispatcher:
         )
         assert result.content["message"] == "hello world"
 
-    def test_dispatch_prompt_command_rejected(self):
+    def test_dispatch_prompt_command_no_generator(self):
+        """PromptCommand without get_prompt returns an error message."""
         registry = CommandRegistry()
 
         async def handle_prompt(args, ctx):
@@ -97,7 +98,7 @@ class TestCommandDispatcher:
             dispatcher.dispatch("/skill", ctx)
         )
         assert result.type == ResultType.TEXT
-        assert "not yet implemented" in result.content["message"]
+        assert "no prompt generator" in result.content["message"]
 
     def test_dispatch_clear_command(self):
         registry = _make_registry_with_commands()
@@ -147,3 +148,32 @@ class TestCommandDispatcher:
         )
         assert result.type == ResultType.TEXT
         assert "Not a command" in result.content["message"]
+
+    def test_dispatch_prompt_command_with_generator(self):
+        """PromptCommand with get_prompt dispatches and returns PROMPT result."""
+        registry = CommandRegistry()
+
+        async def handle_prompt(args, ctx):
+            return CommandResult(type=ResultType.TEXT)
+
+        async def get_prompt(args, ctx):
+            return [{"type": "text", "text": f"Review this code: {args}"}]
+
+        registry.register(PromptCommand(
+            name="/review",
+            description="Review code",
+            handler=handle_prompt,
+            source="skills",
+            get_prompt=get_prompt,
+        ))
+        dispatcher = CommandDispatcher(registry)
+        ctx = _make_context(registry=registry)
+        result = asyncio.run(
+            dispatcher.dispatch("/review src/main.py", ctx)
+        )
+        assert result.type == ResultType.PROMPT
+        assert result.content["command_name"] == "/review"
+        assert result.content["source"] == "skills"
+        blocks = result.content["prompt_blocks"]
+        assert len(blocks) == 1
+        assert "src/main.py" in blocks[0]["text"]
