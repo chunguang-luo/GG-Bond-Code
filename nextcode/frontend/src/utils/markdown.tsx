@@ -1,6 +1,9 @@
 /**
- * Markdown renderer for Ink — uses marked.lexer() to parse into token AST,
- * then renders with Ink's native <Text> component (bold, italic, color props).
+ * Markdown renderer for Ink — uses marked + marked-terminal + cli-highlight.
+ *
+ * marked-terminal renders markdown to ANSI-colored terminal output
+ * (tables via cli-table3, headings/bold/italic via chalk).
+ * cli-highlight provides syntax highlighting for code blocks.
  *
  * Two components:
  * - <Markdown>          : for completed text (useMemo-cached)
@@ -8,309 +11,42 @@
  */
 
 import React, { useMemo } from "react";
-import { Box, Text } from "ink";
-import { marked, Tokens } from "marked";
+import { Text } from "ink";
+import chalk from "chalk";
+import { Marked } from "marked";
+import { markedTerminal } from "marked-terminal";
 
-// ── Inline token rendering ───────────────────────────────────────────────────
-// Ink rule: <Text> can only contain <Text> or strings — NO <Box> inside <Text>.
+// Ensure chalk outputs ANSI sequences — marked-terminal relies on chalk
+// for all styling (headings, bold, italic, etc.) and it checks chalk.level
+// at render time. In Ink's TTY context this is usually > 0, but we force it
+// to guarantee colored output.
+chalk.level = 3;
 
-/** Render inline tokens into flat <Text> elements (safe to nest inside <Text>) */
-function renderInlineTokens(
-  tokens: Tokens.Generic[] | undefined,
-  keyPrefix: string
-): React.ReactNode[] {
-  if (!tokens || tokens.length === 0) return [];
+const marked = new Marked();
 
-  const elements: React.ReactNode[] = [];
+// Step 1: Use marked-terminal for all rendering (tables, headings, bold, etc.)
+marked.use(
+  markedTerminal({
+    showSectionPrefix: false,
+    // Override all style functions with our chalk instance (level=3),
+    // because marked-terminal's internal chalk may have level=0
+    heading: chalk.green.bold,
+    firstHeading: chalk.magenta.bold.underline,
+    strong: chalk.bold,
+    em: chalk.italic,
+    codespan: chalk.yellow,
+    code: chalk.yellow,
+    blockquote: chalk.gray.italic,
+    del: chalk.dim.gray.strikethrough,
+    link: chalk.blue,
+    href: chalk.blue.underline,
+  })
+);
 
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i];
-    const key = `${keyPrefix}-${i}`;
-
-    switch (t.type) {
-      case "text": {
-        // Tokens.Text may have sub-tokens (strong, em, codespan) when inside
-        // list items or other block contexts. Use them if available, otherwise
-        // fall back to plain .text.
-        const textToken = t as Tokens.Text;
-        if (textToken.tokens && textToken.tokens.length > 0) {
-          elements.push(
-            <Text key={key}>{renderInlineTokens(textToken.tokens, key)}</Text>
-          );
-        } else {
-          elements.push(<Text key={key}>{textToken.text}</Text>);
-        }
-        break;
-      }
-
-      case "strong":
-        elements.push(
-          <Text key={key} bold>
-            {renderInlineTokens((t as Tokens.Strong).tokens, key)}
-          </Text>
-        );
-        break;
-
-      case "em":
-        elements.push(
-          <Text key={key} italic>
-            {renderInlineTokens((t as Tokens.Em).tokens, key)}
-          </Text>
-        );
-        break;
-
-      case "codespan":
-        elements.push(
-          <Text key={key} color="yellow">
-            {(t as Tokens.Codespan).text}
-          </Text>
-        );
-        break;
-
-      case "link":
-        elements.push(
-          <Text key={key} color="cyan" underline>
-            {(t as Tokens.Link).text}
-          </Text>
-        );
-        break;
-
-      case "br":
-        elements.push(<Text key={key}>{"\n"}</Text>);
-        break;
-
-      case "escape":
-        elements.push(<Text key={key}>{(t as Tokens.Escape).text}</Text>);
-        break;
-
-      default:
-        elements.push(<Text key={key}>{t.raw || ""}</Text>);
-        break;
-    }
-  }
-
-  return elements;
-}
+// ── Sanitize incomplete streaming Markdown ────────────────────────────────
 
 /**
- * Split a list item's tokens into inline tokens (text, strong, em, codespan, etc.)
- * and block tokens (nested list, blockquote, code, etc.).
- *
- * marked puts them all in item.tokens, but inline and block tokens
- * need different rendering paths.
- */
-function splitItemTokens(tokens: Tokens.Generic[]): {
-  inlineTokens: Tokens.Generic[];
-  blockTokens: Tokens.Generic[];
-} {
-  const inlineTokens: Tokens.Generic[] = [];
-  const blockTokens: Tokens.Generic[] = [];
-
-  // Block-level token types that can appear inside a list item
-  const blockTypes = new Set(["list", "blockquote", "code", "heading", "hr", "table"]);
-
-  for (const t of tokens) {
-    if (blockTypes.has(t.type)) {
-      blockTokens.push(t);
-    } else {
-      inlineTokens.push(t);
-    }
-  }
-
-  return { inlineTokens, blockTokens };
-}
-
-// ── Block token rendering ────────────────────────────────────────────────────
-
-/** Render a single block-level token */
-function renderBlockToken(token: Tokens.Generic, key: string): React.ReactNode {
-  switch (token.type) {
-    case "heading": {
-      const h = token as Tokens.Heading;
-      const color = h.depth <= 2 ? "green" : h.depth === 3 ? "cyan" : undefined;
-      return (
-        <Box key={key} marginTop={1}>
-          <Text bold color={color}>
-            {renderInlineTokens(h.tokens, key)}
-          </Text>
-        </Box>
-      );
-    }
-
-    case "paragraph": {
-      const p = token as Tokens.Paragraph;
-      return (
-        <Box key={key}>
-          <Text>{renderInlineTokens(p.tokens, key)}</Text>
-        </Box>
-      );
-    }
-
-    case "code": {
-      const c = token as Tokens.Code;
-      const lines = c.text.split("\n");
-
-      return (
-        <Box key={key} flexDirection="column" marginTop={0} marginBottom={0}>
-          {c.lang && (
-            <Text dimColor>
-              {"  "}{c.lang}
-            </Text>
-          )}
-          <Text dimColor>{"  ┌" + "─".repeat(72)}</Text>
-          {lines.map((line, i) => (
-            <Text key={`${key}-line-${i}`}>
-              <Text dimColor>{"  │ "}</Text>
-              <Text color="yellow">{line}</Text>
-            </Text>
-          ))}
-          <Text dimColor>{"  └" + "─".repeat(72)}</Text>
-        </Box>
-      );
-    }
-
-    case "blockquote": {
-      const bq = token as Tokens.Blockquote;
-      // NOTE: <Box> cannot go inside <Text>, so we use <Box> wrapper only.
-      // blockquote tokens are block-level, so renderBlockTokens produces <Box> children.
-      // We prefix each line with "> " using marginLeft instead of nesting inside <Text>.
-      return (
-        <Box key={key} flexDirection="column" marginLeft={2}>
-          {renderBlockTokensWithPrefix(bq.tokens, key, "> ")}
-        </Box>
-      );
-    }
-
-    case "list": {
-      const list = token as Tokens.List;
-      return (
-        <Box key={key} flexDirection="column" marginLeft={2}>
-          {list.items.map((item, i) => {
-            const bullet = list.ordered ? `${(list.start ?? 1) + i}. ` : "• ";
-            // Split item.tokens into inline (text, strong, em, codespan...)
-            // and block (nested list, blockquote...) groups for proper rendering
-            const { inlineTokens, blockTokens } = splitItemTokens(item.tokens);
-            return (
-              <Box key={`${key}-item-${i}`} flexDirection="column">
-                <Box>
-                  <Text dimColor>{bullet}</Text>
-                  <Text>{renderInlineTokens(inlineTokens, `${key}-item-${i}`)}</Text>
-                </Box>
-                {blockTokens.length > 0 && (
-                  <Box marginLeft={2} flexDirection="column">
-                    {renderBlockTokens(blockTokens, `${key}-item-${i}-block`)}
-                  </Box>
-                )}
-              </Box>
-            );
-          })}
-        </Box>
-      );
-    }
-
-    case "hr":
-      return (
-        <Box key={key}>
-          <Text dimColor>{"─".repeat(40)}</Text>
-        </Box>
-      );
-
-    case "table": {
-      const tbl = token as Tokens.Table;
-      const colCount = tbl.header.length;
-      const colWidth = Math.floor(76 / Math.max(colCount, 1));
-
-      return (
-        <Box key={key} flexDirection="column">
-          <Box>
-            {tbl.header.map((cell, ci) => (
-              <Text key={`${key}-h-${ci}`} bold width={colWidth}>
-                {cell.text}
-              </Text>
-            ))}
-          </Box>
-          <Text dimColor>{"─".repeat(colCount * colWidth)}</Text>
-          {tbl.rows.map((row, ri) => (
-            <Box key={`${key}-row-${ri}`}>
-              {row.map((cell, ci) => (
-                <Text key={`${key}-r-${ri}-${ci}`} width={colWidth}>
-                  {cell.text}
-                </Text>
-              ))}
-            </Box>
-          ))}
-        </Box>
-      );
-    }
-
-    case "space":
-      return null;
-
-    default:
-      return (
-        <Box key={key}>
-          <Text>{token.raw || ""}</Text>
-        </Box>
-      );
-  }
-}
-
-/** Render block tokens, each prefixed (for blockquote "> " prefix) */
-function renderBlockTokensWithPrefix(
-  tokens: Tokens.Generic[],
-  keyPrefix: string,
-  prefix: string
-): React.ReactNode[] {
-  const elements: React.ReactNode[] = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i];
-    const key = `${keyPrefix}-${i}`;
-
-    switch (t.type) {
-      case "paragraph": {
-        const p = t as Tokens.Paragraph;
-        elements.push(
-          <Box key={key}>
-            <Text dimColor italic>{prefix}</Text>
-            <Text dimColor italic>{renderInlineTokens(p.tokens, key)}</Text>
-          </Box>
-        );
-        break;
-      }
-      case "heading": {
-        const h = t as Tokens.Heading;
-        elements.push(
-          <Box key={key}>
-            <Text dimColor italic>{prefix}</Text>
-            <Text bold dimColor italic>{renderInlineTokens(h.tokens, key)}</Text>
-          </Box>
-        );
-        break;
-      }
-      default:
-        // For other block types inside blockquote, just render normally with indent
-        const el = renderBlockToken(t, key);
-        if (el !== null) elements.push(el);
-        break;
-    }
-  }
-  return elements;
-}
-
-/** Render an array of block-level tokens */
-function renderBlockTokens(tokens: Tokens.Generic[], keyPrefix: string): React.ReactNode[] {
-  const elements: React.ReactNode[] = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const el = renderBlockToken(tokens[i], `${keyPrefix}-${i}`);
-    if (el !== null) elements.push(el);
-  }
-  return elements;
-}
-
-// ── Sanitize incomplete streaming Markdown ─────────────────────────────────────
-
-/**
- * Sanitize potentially incomplete streaming Markdown before lexing.
+ * Sanitize potentially incomplete streaming Markdown before parsing.
  *
  * Handles:
  * - Unclosed fenced code blocks (odd number of ``` lines)
@@ -335,9 +71,6 @@ function sanitizeStreamingMd(raw: string): string {
   }
 
   // Close unclosed ** (bold) and * (italic) across the entire text.
-  // Strategy: count unescaped ** and * delimiters (excluding ones inside code spans
-  // which are already handled above). If odd, append a closing marker.
-  // We check from longest marker first (***) then ** then * to avoid ambiguity.
   text = closeUnclosedDelimiter(text, "\\*\\*\\*");
   text = closeUnclosedDelimiter(text, "\\*\\*");
   text = closeUnclosedDelimiter(text, "\\*");
@@ -350,19 +83,17 @@ function sanitizeStreamingMd(raw: string): string {
  * and append a closing one if the count is odd.
  */
 function closeUnclosedDelimiter(text: string, delimiterRe: string): string {
-  // Remove content inside inline code (`...`) to avoid counting delimiters there
   const withoutCode = text.replace(/`[^`]*`/g, "");
   const matches = withoutCode.match(new RegExp(delimiterRe, "g"));
   const count = matches ? matches.length : 0;
   if (count % 2 !== 0) {
-    // Extract the actual delimiter string from the regex
     const delim = delimiterRe.replace(/\\/g, "");
     text += delim;
   }
   return text;
 }
 
-// ── Components ────────────────────────────────────────────────────────────────
+// ── Components ─────────────────────────────────────────────────────────────
 
 interface MarkdownProps {
   children: string;
@@ -371,16 +102,15 @@ interface MarkdownProps {
 export function Markdown({ children }: MarkdownProps) {
   if (!children || !children.trim()) return null;
 
-  const elements = useMemo(() => {
+  const rendered = useMemo(() => {
     try {
-      const tokens = marked.lexer(children);
-      return renderBlockTokens(tokens as Tokens.Generic[], "md");
+      return marked.parse(children) as string;
     } catch {
-      return [<Text key="fallback">{children}</Text>];
+      return children;
     }
   }, [children]);
 
-  return <Box flexDirection="column">{elements}</Box>;
+  return <Text>{rendered}</Text>;
 }
 
 export function StreamingMarkdown({ children }: MarkdownProps) {
@@ -388,14 +118,9 @@ export function StreamingMarkdown({ children }: MarkdownProps) {
 
   try {
     const sanitized = sanitizeStreamingMd(children);
-    const tokens = marked.lexer(sanitized);
-    const elements = renderBlockTokens(tokens as Tokens.Generic[], "smd");
-    return <Box flexDirection="column">{elements}</Box>;
+    const rendered = marked.parse(sanitized) as string;
+    return <Text>{rendered}</Text>;
   } catch {
-    return (
-      <Box flexDirection="column">
-        <Text>{children}</Text>
-      </Box>
-    );
+    return <Text>{children}</Text>;
   }
 }
