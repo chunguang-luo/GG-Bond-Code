@@ -25,15 +25,12 @@ class TestGrep:
 class TestRgAg:
     """rg and ag follow the same convention as grep."""
 
-    def test_rg_no_matches(self):
-        result = interpret_exit_code("rg pattern", 1)
-        assert result.is_error is False
-        assert result.message == "No matches found"
-
-    def test_ag_no_matches(self):
-        result = interpret_exit_code("ag pattern", 1)
-        assert result.is_error is False
-        assert result.message == "No matches found"
+    def test_search_no_matches(self):
+        """Exit 1 = no matches, not an error."""
+        for cmd in ["rg pattern", "ag pattern"]:
+            result = interpret_exit_code(cmd, 1)
+            assert result.is_error is False
+            assert result.message == "No matches found"
 
 
 class TestDiff:

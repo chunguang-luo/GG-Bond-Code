@@ -113,11 +113,42 @@ class PermissionManager:
 
                 if suggested_prefix:
                     # Use the prefix as the grant pattern instead of Bash:*
-                    pattern = f"Bash:{suggested_prefix}:*"
+                    pattern = f"Bash:{suggested_prefix}*"
                 else:
-                    pattern = f"{tool_name}:*"
+                    # Cannot extract a specific prefix — only allow for this session,
+                    # do NOT persist Bash:* to settings (too broad)
+                    logger.warning(
+                        "Cannot extract specific prefix for Bash command, "
+                        "session-only grant (not persisted): %s",
+                        params["command"][:100],
+                    )
+                    key = self._make_key(tool_name, params)
+                    self._session_allowed.add(key)
+                    return None
+            elif tool_name in ("Edit", "Write") and "file_path" in params:
+                # For file operations, allow by directory prefix instead of Edit:*
+                import os
+                file_path = params["file_path"]
+                parent = os.path.dirname(file_path)
+                if parent:
+                    pattern = f"{tool_name}:{parent}/*"
+                else:
+                    # No parent directory — session-only, don't persist Tool:*
+                    logger.warning(
+                        "Cannot extract directory for %s, session-only grant: %s",
+                        tool_name, file_path,
+                    )
+                    key = self._make_key(tool_name, params)
+                    self._session_allowed.add(key)
+                    return None
             else:
-                pattern = f"{tool_name}:*"
+                # Other tools — don't persist broad Tool:* rules
+                logger.warning(
+                    "Broad %s:* rule not persisted, session-only grant", tool_name,
+                )
+                key = self._make_key(tool_name, params)
+                self._session_allowed.add(key)
+                return None
 
             self._session_allowed.add(pattern)
             self._persist_allow(pattern)
@@ -128,7 +159,19 @@ class PermissionManager:
         return suggested_prefix
 
     def _persist_allow(self, pattern: str) -> None:
-        """Persist an allow pattern to project .settings.json via public API."""
+        """Persist an allow pattern to project .settings.json via public API.
+
+        Refuses to persist overly broad patterns like Bash:* or Edit:*
+        that would effectively bypass the permission system.
+        """
+        import logging
+        _logger = logging.getLogger(__name__)
+
+        # Guard: never persist overly broad patterns
+        if pattern in ("Bash:*", "Edit:*", "Write:*", "Agent:*"):
+            _logger.warning("Refusing to persist overly broad pattern: %s", pattern)
+            return
+
         # Read current allow list from settings
         allow_list = list(get_setting("permissions.allow", []))
         if pattern not in allow_list:
@@ -163,23 +206,42 @@ class PermissionManager:
     def _make_key(self, tool_name: str, params: dict[str, Any]) -> str:
         """Create a permission key from tool name and params.
 
-        For Bash commands, strips safe environment variables from
-        the command so that `NODE_ENV=test npm run build` matches
-        the rule for `npm run` rather than requiring a separate rule.
+        For Bash commands, normalizes the command so that compound commands
+        like `cd /dir && source venv && pytest ...` match rules like
+        `Bash:pytest:*` instead of requiring `Bash:cd:*` rules.
+
+        Strips:
+        - Safe environment variable assignments (NODE_ENV=test ...)
+        - Compound command prefixes (cd ..., source ...) that are just setup
         """
         if tool_name == "Bash":
             command = params.get("command", "")
-            # Strip safe env vars for matching
-            from ..tools.bash_rule_suggestion import strip_safe_env_vars
+            # Strip safe env vars and compound command prefixes
+            from ..tools.bash_rule_suggestion import strip_safe_env_vars, strip_compound_prefix
             stripped = strip_safe_env_vars(command)
+            stripped = strip_compound_prefix(stripped)
             return f"Bash:{stripped}"
         elif tool_name in ("Edit", "Write"):
             return f"{tool_name}:{params.get('file_path', '')}"
         return tool_name
 
     def _match(self, pattern: str, key: str) -> bool:
-        """Simple glob-style matching."""
-        return fnmatch.fnmatch(key, pattern)
+        """Match a permission key against a pattern.
+
+        Unlike filesystem glob, `*` matches any character including `/`,
+        since Bash command keys contain paths and arguments with slashes.
+        """
+        # Convert glob pattern to regex where * matches everything
+        import re as _re
+        regex = ""
+        for ch in pattern:
+            if ch == "*":
+                regex += ".*"
+            elif ch == "?":
+                regex += "."
+            else:
+                regex += _re.escape(ch)
+        return bool(_re.fullmatch(regex, key))
 
     # ── Agent support ──────────────────────────────────────────────────
 

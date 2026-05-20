@@ -23,6 +23,7 @@ def create_builtin_registry() -> CommandRegistry:
     from .compact import create as create_compact
     from .help import create as create_help
     from .context import create as create_context
+    from .summary import create as create_summary
     from .thinking import create as create_thinking
     from .model import create as create_model
     from .log import create as create_log
@@ -35,6 +36,7 @@ def create_builtin_registry() -> CommandRegistry:
         create_compact,
         create_help,
         create_context,
+        create_summary,
         create_thinking,
         create_model,
         create_log,

@@ -24,7 +24,31 @@ Additional guidelines:
 6. Use the Grep to search file contents.
 7. Always use absolute paths when referencing files.
 8. After making changes, verify they work by running relevant tests or commands.
-9. If an approach fails, diagnose why before switching tactics—read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either."""
+9. If an approach fails, diagnose why before switching tactics—read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either.
+
+### 后台执行（run_in_background）
+
+Bash 和 Agent 工具都支持 `run_in_background` 参数。设为 true 时，任务在后台执行，\
+不阻塞当前对话，你可以继续执行其他工具调用。\
+**后台任务完成后，结果会自动注入主流程。**
+
+**核心原则：只有在需要并行执行多个任务时才用后台模式。**
+
+**应该使用后台执行的场景：**
+- 同时派多个子 Agent 并行处理独立任务（Coordinator 模式）
+- 同时运行多个构建/测试命令
+- 持续监听进程：开发服务器、文件监控等
+
+**不应该使用后台执行的场景：**
+- 只有一个任务 — 前台执行即可，实时看到输出
+- 需要结果才能继续的工作：如果下一步依赖输出，前台等待
+- 快速命令：`git status`、`ls` 等秒级完成的命令
+- 交互式命令：需要用户输入的命令（如 `git rebase -i`）
+
+**后台任务管理：**
+- 后台任务启动后返回 task_id，主流程会在所有后台任务完成后自动获取结果
+- 你不需要手动调用 TaskOutput，结果会自动作为上下文注入
+- 使用 TaskStop 工具可以终止正在运行的后台任务"""
 
 
 # Section function - returns content when called

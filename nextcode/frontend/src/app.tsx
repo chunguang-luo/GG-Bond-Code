@@ -20,7 +20,7 @@ import { WelcomeScreen } from "./components/welcome-screen";
 
 interface DisplayMessage {
   id: string;
-  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system" | "info" | "command" | "agent_start" | "agent_tool_use" | "agent_tool_result" | "agent_result" | "queued";
+  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system" | "info" | "command" | "agent_start" | "agent_tool_use" | "agent_tool_result" | "agent_result" | "queued" | "task_notification";
   content: string;
   toolName?: string;
   toolInput?: Record<string, unknown>;
@@ -87,14 +87,24 @@ export function App({ transport }: AppProps) {
   const [renderTick, setRenderTick] = useState(0);
   const [showWelcome, setShowWelcome] = useState(true);
 
+  // Background task tracking: count of running bash/agent tasks
+  const [bgTaskCount, setBgTaskCount] = useState({ bash: 0, agent: 0 });
+
+  // Current running tool info — shown in the status bar during execution
+  const [currentTool, setCurrentTool] = useState<string | null>(null);
+
+  // Pending task notifications — buffered while a query is running,
+  // flushed to message list after the current query completes.
+  const pendingNotificationsRef = useRef<DisplayMessage[]>([]);
+
   // Query timing: track when the current query started
   const [queryStartMs, setQueryStartMs] = useState<number | null>(null);
   const elapsedSec = useElapsedTime(queryStartMs);
 
   // Use ref for currentText to avoid stale closures in onMessage
   const currentTextRef = useRef("");
-  // Accumulate sub-agent streaming text for Markdown rendering
-  const agentTextRef = useRef("");
+  // Track last displayed toolPurpose to avoid duplicates from parallel tool calls
+  const lastPurposeRef = useRef("");
   // Queue of user messages submitted while a query is running.
   // Shown above the input bar as pending tasks. When the current response
   // finishes, the first queued message is sent as the next query.
@@ -133,7 +143,6 @@ export function App({ transport }: AppProps) {
 
   // Derive currentText from ref for rendering
   const currentText = currentTextRef.current;
-  const agentText = agentTextRef.current;
 
   // Helper: finalize current accumulated text into messages
   const finalizeCurrentText = useCallback(() => {
@@ -144,14 +153,8 @@ export function App({ transport }: AppProps) {
     }
   }, []);
 
-  // Helper: finalize accumulated sub-agent text into messages
-  const finalizeAgentText = useCallback(() => {
-    if (agentTextRef.current) {
-      const text = agentTextRef.current;
-      agentTextRef.current = "";
-      setMessages((prev) => [...prev, { id: nextId(), type: "text", content: text }]);
-    }
-  }, []);
+  // Helper: finalize accumulated sub-agent text into messages (no-op now — not used)
+  const finalizeAgentText = useCallback(() => {}, []);
 
   // ── IPC Message Handler ───────────────────────────────────────────────────
 
@@ -207,7 +210,14 @@ export function App({ transport }: AppProps) {
             toolInput?: Record<string, unknown>;
             toolPurpose?: string;
           };
-          if (payload.toolPurpose) {
+          // Track the current running tool for the status bar
+          if (payload.toolName) {
+            setCurrentTool(payload.toolName);
+          }
+          // Show toolPurpose text once — skip if it's the same as the last one
+          // (parallel tool calls share the same purpose, avoid duplication)
+          if (payload.toolPurpose && payload.toolPurpose !== lastPurposeRef.current) {
+            lastPurposeRef.current = payload.toolPurpose;
             setMessages((prev) => [...prev, { id: nextId(), type: "text", content: payload.toolPurpose! }]);
           }
           setMessages((prev) => [
@@ -224,6 +234,7 @@ export function App({ transport }: AppProps) {
         }
 
         case CoreToInk.QUERY_TOOL_RESULT: {
+          setCurrentTool(null);
           const result = msg.payload as {
             toolUseId?: string;
             toolName?: string;
@@ -258,6 +269,7 @@ export function App({ transport }: AppProps) {
           ]);
           setIsQueryRunning(false);
           setQueryStartMs(null);
+          setCurrentTool(null);
           break;
         }
 
@@ -288,79 +300,61 @@ export function App({ transport }: AppProps) {
               id: nextId(),
               type: "agent_start",
               content: agentMeta.description || agentMeta.agent_type || "Agent",
-              metadata: msg.payload as Record<string, unknown>,
+              metadata: { ...msg.payload, _startMs: Date.now() } as Record<string, unknown>,
             },
           ]);
           break;
         }
 
         case CoreToInk.AGENT_TEXT_DELTA: {
-          // Accumulate sub-agent streaming text into ref for Markdown rendering
-          const agentText = (msg.payload as { text?: string }).text || "";
-          if (agentText) {
-            agentTextRef.current += agentText;
-            scheduleFlush();
-          }
+          // No longer streaming sub-agent text — events not forwarded from backend
           break;
         }
 
         case CoreToInk.AGENT_TOOL_USE: {
-          // Finalize any accumulated agent text before showing tool call
-          finalizeAgentText();
-          const agentToolPayload = msg.payload as {
-            toolUseId?: string;
-            toolName?: string;
-            toolInput?: Record<string, unknown>;
-          };
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: agentToolPayload.toolUseId || nextId(),
-              type: "agent_tool_use",
-              content: "",
-              toolName: agentToolPayload.toolName,
-              toolInput: agentToolPayload.toolInput,
-            },
-          ]);
+          // No longer showing sub-agent tool calls — events not forwarded from backend
           break;
         }
 
         case CoreToInk.AGENT_TOOL_RESULT: {
-          const agentResultPayload = msg.payload as {
-            toolUseId?: string;
-            toolName?: string;
-            toolResult?: string;
-            toolError?: boolean;
-            elapsedMs?: number;
-          };
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: agentResultPayload.toolUseId || nextId(),
-              type: "agent_tool_result",
-              content: "",
-              toolName: agentResultPayload.toolName,
-              toolResult: agentResultPayload.toolResult,
-              toolError: agentResultPayload.toolError,
-              elapsedMs: agentResultPayload.elapsedMs,
-            },
-          ]);
+          // No longer showing sub-agent tool results — events not forwarded from backend
+          break;
+        }
+
+        case CoreToInk.AGENT_PROGRESS: {
+          // Update the corresponding agent_start message with tool count
+          const progress = msg.payload as { agent_id?: string; tool_use_count?: number };
+          if (progress.agent_id) {
+            setMessages((prev) => prev.map((m) => {
+              if (m.type === "agent_start" && m.metadata?.agent_id === progress.agent_id) {
+                return { ...m, metadata: { ...m.metadata, _tool_use_count: progress.tool_use_count || 0 } };
+              }
+              return m;
+            }));
+          }
           break;
         }
 
         case CoreToInk.AGENT_RESULT: {
-          // Finalize any accumulated agent text before showing result
-          finalizeAgentText();
-          const agentResultMeta = msg.payload as { elapsed?: string };
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: nextId(),
-              type: "agent_result",
-              content: (msg.payload as { content?: string }).content || "",
-              metadata: { ...msg.payload, _elapsed: agentResultMeta.elapsed || "" } as Record<string, unknown>,
-            },
-          ]);
+          // Update the corresponding agent_start message: mark Done, stop timer, set final values
+          const resultPayload = msg.payload as { agent_id?: string; elapsed?: string; tool_use_count?: number };
+          if (resultPayload.agent_id) {
+            setMessages((prev) => prev.map((m) => {
+              if (m.type === "agent_start" && m.metadata?.agent_id === resultPayload.agent_id) {
+                return {
+                  ...m,
+                  type: "agent_start",  // keep same type but update state
+                  metadata: {
+                    ...m.metadata,
+                    _done: true,
+                    _finalElapsed: resultPayload.elapsed || "",
+                    _tool_use_count: resultPayload.tool_use_count || m.metadata?._tool_use_count || 0,
+                  },
+                };
+              }
+              return m;
+            }));
+          }
           break;
         }
 
@@ -371,7 +365,14 @@ export function App({ transport }: AppProps) {
             flushTimerRef.current = null;
           }
           finalizeCurrentText();
+          setCurrentTool(null);
           setRenderTick((t) => t + 1); // Immediate final render
+          // Flush any pending task notifications after the query output
+          const pendingNotifs = pendingNotificationsRef.current;
+          if (pendingNotifs.length > 0) {
+            pendingNotificationsRef.current = [];
+            setMessages((prev) => [...prev, ...pendingNotifs]);
+          }
           // Check pending queue for the next question
           const pending = pendingQuestionsRef.current;
           if (pending.length > 0) {
@@ -466,7 +467,6 @@ export function App({ transport }: AppProps) {
         case CoreToInk.QUERY_CLEARED: {
           setMessages([]);
           currentTextRef.current = "";
-          agentTextRef.current = "";
           setShowWelcome(true);
           break;
         }
@@ -512,6 +512,51 @@ export function App({ transport }: AppProps) {
 
         case CoreToInk.PING: {
           transport.sendEvent(InkToCore.PONG, { timestamp: Date.now() });
+          break;
+        }
+
+        case CoreToInk.TASK_COUNT: {
+          const tc = msg.payload as { bash?: number; agent?: number };
+          setBgTaskCount({ bash: tc.bash || 0, agent: tc.agent || 0 });
+          break;
+        }
+
+        case CoreToInk.TASK_STARTED: {
+          const ts = msg.payload as { task_id?: string; task_type?: string; description?: string };
+          const typeLabel = ts.task_type === "local_agent" ? "Agent" : "Shell";
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextId(),
+              type: "task_notification",
+              content: `⏳ Background ${typeLabel} started: ${ts.task_id || ""}`,
+              metadata: { isStarted: true, description: ts.description || "" },
+            },
+          ]);
+          break;
+        }
+
+        case CoreToInk.TASK_COMPLETED:
+        case CoreToInk.TASK_FAILED: {
+          const tf = msg.payload as { task_id?: string; task_type?: string; status?: string; result?: string; description?: string };
+          const isFailed = msg.type === CoreToInk.TASK_FAILED;
+          const icon = isFailed ? "✗" : "✓";
+          const typeLabel = tf.task_type === "local_agent" ? "Agent" : "Shell";
+          const notification: DisplayMessage = {
+            id: nextId(),
+            type: "task_notification",
+            content: `${icon} Background ${typeLabel} ${isFailed ? "failed" : "completed"}`,
+            metadata: {
+              result: tf.result || "",
+              isFailed,
+              description: tf.description || "",
+            },
+          };
+          if (isQueryRunning) {
+            pendingNotificationsRef.current.push(notification);
+          } else {
+            setMessages((prev) => [...prev, notification]);
+          }
           break;
         }
       }
@@ -567,6 +612,7 @@ export function App({ transport }: AppProps) {
         } else {
           setIsQueryRunning(true);
           setQueryStartMs(Date.now());
+          lastPurposeRef.current = "";
           // Show user's question in message list
           setMessages((prev) => [
             ...prev,
@@ -609,13 +655,37 @@ export function App({ transport }: AppProps) {
   return (
     <Box flexDirection="column" height="100%">
       {showWelcome && <WelcomeScreen model={model} cwd={cwd} />}
-      <MessageList messages={messages} currentText={currentText} agentText={agentText} />
-      {/* Thinking indicator with live elapsed time */}
+      <MessageList messages={messages} currentText={currentText} />
+      {/* Status bar: shows current activity with elapsed time */}
       {isQueryRunning && queryStartMs !== null && (
         <Box marginTop={0} marginLeft={1}>
-          <Text italic color="yellow">*thinking </Text>
-          <Text dimColor>{formatElapsed(elapsedSec)}</Text>
-          <Text italic color="yellow">...</Text>
+          {currentTool ? (
+            <>
+              <Text italic color="yellow">*Execute {currentTool} </Text>
+              <Text dimColor>{formatElapsed(elapsedSec)}</Text>
+            </>
+          ) : (
+            <>
+              <Text italic color="yellow">*thinking </Text>
+              <Text dimColor>{formatElapsed(elapsedSec)}</Text>
+              <Text italic color="yellow">...</Text>
+            </>
+          )}
+          {(bgTaskCount.bash > 0 || bgTaskCount.agent > 0) && (
+            <Text dimColor> | bg: {[
+              bgTaskCount.bash > 0 && `${bgTaskCount.bash} shell`,
+              bgTaskCount.agent > 0 && `${bgTaskCount.agent} agent`,
+            ].filter(Boolean).join(", ")}</Text>
+          )}
+        </Box>
+      )}
+      {/* Show background task count even when not thinking */}
+      {!isQueryRunning && (bgTaskCount.bash > 0 || bgTaskCount.agent > 0) && (
+        <Box marginTop={0} marginLeft={1}>
+          <Text dimColor>bg: {[
+            bgTaskCount.bash > 0 && `${bgTaskCount.bash} shell`,
+            bgTaskCount.agent > 0 && `${bgTaskCount.agent} agent`,
+          ].filter(Boolean).join(", ")}</Text>
         </Box>
       )}
       {/* Pending questions shown above input bar while a query is running */}
@@ -630,20 +700,22 @@ export function App({ transport }: AppProps) {
           ))}
         </Box>
       )}
-      <InputBar
-        inputState={inputState}
-        setInputState={setInputState}
-        onSubmit={handleSubmit}
-        disabled={!!permissionRequest}
-        isQueryRunning={isQueryRunning}
-        model={model}
-        commands={commands}
-      />
-      {permissionRequest && (
+      {/* Permission dialog with inline input — replaces InputBar when active */}
+      {permissionRequest ? (
         <PermissionDialog
           toolName={permissionRequest.toolName}
           params={permissionRequest.params}
           onResponse={handlePermissionResponse}
+        />
+      ) : (
+        <InputBar
+          inputState={inputState}
+          setInputState={setInputState}
+          onSubmit={handleSubmit}
+          disabled={false}
+          isQueryRunning={isQueryRunning}
+          model={model}
+          commands={commands}
         />
       )}
     </Box>

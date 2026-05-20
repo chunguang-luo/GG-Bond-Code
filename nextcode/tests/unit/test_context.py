@@ -214,8 +214,9 @@ def test_subagent_identity():
 
 
 def test_subagent_shares_permissions_and_registry():
-    """Sub-agent shares parent's permissions and registry."""
+    """Sub-agent creates new PermissionManager but inherits rules from parent."""
     pm = PermissionManager()
+    pm._allowed.append("tool_a")
     reg = ToolRegistry()
     parent = ToolUseContext(
         get_state=lambda k: None,
@@ -224,7 +225,10 @@ def test_subagent_shares_permissions_and_registry():
         registry=reg,
     )
     sub = create_subagent_context(parent)
-    assert sub.permissions is pm
+    # Sub-agent gets a new PermissionManager (not same object)
+    # But inherits the allow/deny lists from parent
+    assert sub.permissions is not pm
+    assert sub.permissions._allowed == pm._allowed
     assert sub.registry is reg
 
 

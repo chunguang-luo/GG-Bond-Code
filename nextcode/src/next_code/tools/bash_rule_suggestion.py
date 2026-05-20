@@ -59,25 +59,38 @@ _SUBCMD_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 # Regex for environment variable assignment (KEY=value)
 _ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
+# Command separators that create compound commands
+_COMPOUND_SEPARATORS = re.compile(r"&&|\|\||;")
 
-def get_command_prefix(command: str) -> str | None:
-    """Extract a reusable prefix from a command for permission rule suggestion.
+# Commands that are just "setup" in compound commands — safe to strip for
+# permission key matching. They don't change what the main command does
+# in a security-relevant way.
+_SETUP_COMMANDS: frozenset[str] = frozenset({
+    "cd", "source", ".",  # cd and source are pure setup
+    "pushd", "popd", "dirs",  # directory stack
+    "export", "set", "unset", "alias", "unalias",  # shell config
+})
 
-    The prefix consists of the base command + first subcommand/token,
-    stripped of safe environment variable assignments and safe wrappers.
+
+def _split_compound(command: str) -> list[str]:
+    """Split a compound command into individual simple commands.
+
+    Handles &&, ||, and ; separators. Preserves order so callers
+    can pick the most meaningful segment (typically the last non-trivial one).
 
     Examples:
-        "git commit -m 'fix'" -> "git commit"
-        "NODE_ENV=test npm run build" -> "npm run"
-        "MY_VAR=val npm run build" -> None (MY_VAR not in safe vars)
-        "sudo rm -rf /" -> None (sudo is never-suggest)
-        "ls" -> None (single token, no subcommand)
+        "cd /tmp && npm run build" -> ["cd /tmp", "npm run build"]
+        "git add . && git commit -m 'fix'" -> ["git add .", "git commit -m 'fix'"]
+        "ls" -> ["ls"]
+    """
+    parts = _COMPOUND_SEPARATORS.split(command)
+    return [p.strip() for p in parts if p.strip()]
 
-    Args:
-        command: The command to extract a prefix from.
 
-    Returns:
-        The suggested prefix string, or None if no good prefix can be extracted.
+def _extract_prefix_single(command: str) -> str | None:
+    """Extract a prefix from a single (non-compound) command.
+
+    Returns the "base subcommand" (e.g. "git commit") or None.
     """
     tokens = command.strip().split()
     if not tokens:
@@ -115,6 +128,80 @@ def get_command_prefix(command: str) -> str | None:
     return " ".join(remaining[:2])
 
 
+def get_command_prefix(command: str) -> str | None:
+    """Extract a reusable prefix from a command for permission rule suggestion.
+
+    For compound commands (&&, ||, ;), iterates from last segment to first
+    and returns the prefix of the first segment that yields a meaningful result.
+    This handles patterns like "cd /dir && npm run build" where the meaningful
+    command is "npm run", not "cd".
+
+    Examples:
+        "git commit -m 'fix'" -> "git commit"
+        "cd /tmp && npm run build" -> "npm run"
+        "NODE_ENV=test npm run build" -> "npm run"
+        "sudo rm -rf /" -> None (sudo is never-suggest)
+        "ls" -> None (single token, no subcommand)
+
+    Args:
+        command: The command to extract a prefix from.
+
+    Returns:
+        The suggested prefix string, or None if no good prefix can be extracted.
+    """
+    segments = _split_compound(command)
+
+    # For compound commands, try from the last segment backwards
+    # (the last segment is typically the main action, earlier ones are setup)
+    for segment in reversed(segments):
+        prefix = _extract_prefix_single(segment)
+        if prefix is not None:
+            return prefix
+
+    # All segments returned None — try the last segment's base command
+    if segments:
+        return _extract_base_command(segments[-1])
+
+    return None
+
+
+def _extract_base_command(command: str) -> str | None:
+    """Extract just the base command name from a simple command.
+
+    Used as a fallback when no subcommand prefix can be extracted.
+    Returns the command name (e.g. "ls", "python3") or None for dangerous commands.
+
+    Only returns a result for single-token commands; multi-token commands
+    without valid subcommands should return None.
+    """
+    tokens = command.strip().split()
+    if not tokens:
+        return None
+
+    # Skip safe env vars
+    i = 0
+    while i < len(tokens) and _ENV_VAR_RE.match(tokens[i]):
+        var_name = tokens[i].split("=")[0]
+        if var_name not in SAFE_ENV_VARS:
+            return None
+        i += 1
+
+    if i >= len(tokens):
+        return None
+
+    base = tokens[i].rsplit("/", 1)[-1] if "/" in tokens[i] else tokens[i]
+
+    if base in NEVER_SUGGEST_PREFIXES:
+        return None
+
+    # Only return base command for single-token commands without subcommands.
+    # Multi-token commands without valid subcommands should return None.
+    if len(tokens) - i == 1:
+        return None
+
+    return base
+
+
 def strip_safe_env_vars(command: str) -> str:
     """Strip leading safe environment variable assignments from a command.
 
@@ -140,3 +227,43 @@ def strip_safe_env_vars(command: str) -> str:
         i += 1
 
     return " ".join(tokens[i:])
+
+
+def strip_compound_prefix(command: str) -> str:
+    """Strip setup command prefixes from a compound command for permission matching.
+
+    Handles patterns like `cd /dir && source venv && pytest tests/` by stripping
+    the `cd` and `source` segments so the resulting key starts with the main
+    command (`pytest tests/`), matching rules like `Bash:pytest:*`.
+
+    Only strips setup commands (cd, source, export, etc.) — never strips
+    actual commands like `npm`, `git`, `pytest`.
+
+    Args:
+        command: The command to strip setup prefixes from.
+
+    Returns:
+        The command with setup prefixes removed.
+    """
+    segments = _split_compound(command)
+
+    # Find the first non-setup segment
+    for i, segment in enumerate(segments):
+        tokens = segment.strip().split()
+        if not tokens:
+            continue
+        base = tokens[0].rsplit("/", 1)[-1] if "/" in tokens[0] else tokens[0]
+        # Skip safe env var prefixes within the segment
+        j = 0
+        while j < len(tokens) and _ENV_VAR_RE.match(tokens[j]):
+            j += 1
+        if j < len(tokens):
+            seg_base = tokens[j].rsplit("/", 1)[-1] if "/" in tokens[j] else tokens[j]
+        else:
+            seg_base = base
+        if seg_base not in _SETUP_COMMANDS:
+            # This is the main command — return from here onwards
+            return " && ".join(segments[i:])
+
+    # All segments are setup — return original
+    return command

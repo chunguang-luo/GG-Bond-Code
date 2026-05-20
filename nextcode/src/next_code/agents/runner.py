@@ -131,11 +131,15 @@ async def run_agent(
 
     # 收集最终的 assistant 文本
     final_text_parts: list[str] = []
+    tool_use_count = 0
 
     try:
         async for event in runner.run(prompt):
             # Tag all sub-agent events with source="agent"
             event.source = "agent"
+            # Count tool calls for the result summary
+            if event.type == "tool_use":
+                tool_use_count += 1
             # 收集 assistant 的文本输出
             if event.type == "text":
                 final_text_parts.append(event.content)
@@ -155,6 +159,7 @@ async def run_agent(
         metadata={
             "agent_id": agent_id,
             "agent_type": agent_def.agent_type,
+            "tool_use_count": tool_use_count,
         },
         source="agent",
     )

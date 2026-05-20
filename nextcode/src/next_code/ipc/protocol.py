@@ -67,6 +67,13 @@ class CoreToInk(str, Enum):
     AGENT_TEXT_DELTA = "agent.text_delta"
     AGENT_TOOL_USE = "agent.tool_use"
     AGENT_TOOL_RESULT = "agent.tool_result"
+    AGENT_PROGRESS = "agent.progress"
+
+    # Task events — background task lifecycle
+    TASK_STARTED = "task.started"
+    TASK_COMPLETED = "task.completed"
+    TASK_FAILED = "task.failed"
+    TASK_COUNT = "task.count"  # Periodic background task count update
 
     # Heartbeat
     PING = "ping"

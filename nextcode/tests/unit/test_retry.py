@@ -25,7 +25,7 @@ class TestRetryPolicy:
     def test_default_policy(self):
         """Test default retry policy values."""
         policy = RetryPolicy()
-        assert policy.max_retries == 3
+        assert policy.max_retries == 10
         assert policy.base_delay_ms == 500
         assert policy.max_delay_ms == 32000
         assert policy.delay_multipliers == [1, 2, 4]
@@ -112,14 +112,18 @@ class TestIsRetryableError:
     """Test error retryability detection."""
 
     def test_4xx_errors_not_retryable(self):
-        """Test that 4xx errors are not retryable."""
+        """Test that 4xx errors (except 429) are not retryable."""
         class MockError:
             def __init__(self, status_code):
                 self.status_code = status_code
 
         for code in range(400, 500):
             error = MockError(code)
-            assert is_retryable_error(error) is False
+            if code == 429:
+                # 429 Rate Limit IS retryable
+                assert is_retryable_error(error) is True
+            else:
+                assert is_retryable_error(error) is False
 
     def test_5xx_errors_retryable(self):
         """Test that 5xx errors are retryable."""
@@ -339,7 +343,7 @@ class TestRetryManager:
         manager = RetryManager()
         policy = manager.get_policy()
         assert isinstance(policy, RetryPolicy)
-        assert policy.max_retries == 3
+        assert policy.max_retries == 10
 
     def test_set_policy(self):
         """Test setting custom policy."""

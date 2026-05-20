@@ -1,10 +1,8 @@
 /**
- * PermissionDialog — interactive permission prompt.
+ * PermissionDialog — interactive permission prompt with inline input.
  *
- * Shows tool name and params, allows user to:
- * - [y] Allow once
- * - [a] Always allow (session + persist)
- * - [n] Deny
+ * Shows tool name and params, then an input box where the user types
+ * y (allow), a (always allow), or n (deny) and presses Enter.
  */
 
 import React, { useState } from "react";
@@ -17,21 +15,34 @@ interface PermissionDialogProps {
 }
 
 export function PermissionDialog({ toolName, params, onResponse }: PermissionDialogProps) {
-  const [selected, setSelected] = useState<"y" | "a" | "n" | null>(null);
+  const [value, setValue] = useState("");
+  const [error, setError] = useState("");
 
   useInput(
     (input, key) => {
-      if (key.return) return;
-      const ch = input.toLowerCase();
-      if (ch === "y") {
-        setSelected("y");
-        onResponse("allow");
-      } else if (ch === "a") {
-        setSelected("a");
-        onResponse("always_allow");
-      } else if (ch === "n") {
-        setSelected("n");
-        onResponse("deny");
+      if (key.return) {
+        const ch = value.trim().toLowerCase();
+        if (ch === "y" || ch === "yes") {
+          onResponse("allow");
+        } else if (ch === "a" || ch === "always") {
+          onResponse("always_allow");
+        } else if (ch === "n" || ch === "no") {
+          onResponse("deny");
+        } else {
+          setError("Enter y, n, or a");
+        }
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setValue((prev) => prev.slice(0, -1));
+        setError("");
+      } else if (input && !key.ctrl && !key.meta) {
+        // Only accept y, n, a characters
+        const ch = input.toLowerCase();
+        if (ch === "y" || ch === "n" || ch === "a") {
+          setValue(ch);
+          setError("");
+        }
       }
     },
     { isActive: true }
@@ -45,28 +56,27 @@ export function PermissionDialog({ toolName, params, onResponse }: PermissionDia
   });
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor="yellow"
-      paddingX={2}
-      paddingY={1}
-    >
-      <Box marginBottom={1}>
-        <Text color="yellow" bold>
-          {"⚙ "}{toolName} wants to execute:
-        </Text>
-      </Box>
-      {paramLines.map((line, i) => (
-        <Box key={i}>
-          <Text dimColor>{line}</Text>
+    <Box flexDirection="column">
+      {/* Permission info */}
+      <Box flexDirection="column" paddingLeft={2}>
+        <Box>
+          <Text color="red" bold>{"⚙ "}{toolName}</Text>
+          <Text> wants to execute:</Text>
         </Box>
-      ))}
-      <Box marginTop={1}>
+        {paramLines.map((line, i) => (
+          <Box key={i}>
+            <Text dimColor>{line}</Text>
+          </Box>
+        ))}
+      </Box>
+      {/* Inline input bar */}
+      <Box paddingLeft={2}>
         <Text bold>Allow? </Text>
-        <Text color={selected === "y" ? "green" : "gray"} bold={selected === "y"}>[y]es </Text>
-        <Text color={selected === "a" ? "green" : "gray"} bold={selected === "a"}>[a]ll </Text>
-        <Text color={selected === "n" ? "red" : "gray"} bold={selected === "n"}>[n]o</Text>
+        <Text dimColor>[y]es [a]ll [n]o </Text>
+        <Text color="red" bold>{"> "}</Text>
+        <Text>{value}</Text>
+        <Text inverse>{" "}</Text>
+        {error && <Text color="red"> {error}</Text>}
       </Box>
     </Box>
   );

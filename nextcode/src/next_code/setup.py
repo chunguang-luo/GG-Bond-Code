@@ -41,7 +41,11 @@ def setup(cwd: str, model: str | None = None) -> None:
     # 4. Initialize conversation history
     store.set("messages", [])
 
-    # 5. Initialize UI preferences in Store (optimization 3)
+    # 5. Record session start time
+    import time
+    store.set("session_start", time.time())
+
+    # 6. Initialize UI preferences in Store (optimization 3)
     store.set("ui.show_thinking", False)
     store.set("ui.show_tool_details", False)
 

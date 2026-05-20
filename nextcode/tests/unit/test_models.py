@@ -42,7 +42,6 @@ def test_longest_prefix_match():
     spec_general = get_model_spec("deepseek-v3")
     assert spec_chat.context_window == 128_000
     assert spec_general.context_window == 128_000
-    # Both should work, deepseek-chat matches the specific prefix
 
 
 def test_case_insensitive():

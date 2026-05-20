@@ -98,9 +98,12 @@ def is_retryable_error(error: Exception, status_code: int | None = None) -> bool
     Returns:
         True if retry should be attempted, False otherwise
     """
-    # Don't retry on client errors (4xx)
+    # Don't retry on client errors (4xx), except 429 (rate limit) which should be retried
     if hasattr(error, "status_code"):
         if error.status_code is not None:
+            # 429 Rate Limit is retryable
+            if error.status_code == 429:
+                return True
             # 4xx errors indicate client errors, don't retry
             if 400 <= error.status_code < 500:
                 return False

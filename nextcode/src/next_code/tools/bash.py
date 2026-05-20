@@ -77,6 +77,7 @@ class BashTool(Tool):
         command = params["command"]
         timeout_ms = params.get("timeout", 120000)
         run_in_background = params.get("run_in_background", False)
+        task_description = params.get("description", "")
 
         # Input validation (sleep detection, empty command, etc.)
         validation = validate_bash_input(command, run_in_background=run_in_background)
@@ -96,6 +97,7 @@ class BashTool(Tool):
             command,
             timeout_ms=timeout_ms,
             run_in_background=run_in_background,
+            description=task_description,
         )
 
         # Format output

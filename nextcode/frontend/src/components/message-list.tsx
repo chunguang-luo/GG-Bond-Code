@@ -10,7 +10,7 @@ import { Markdown, StreamingMarkdown } from "../utils/markdown";
 
 export interface DisplayMessage {
   id: string;
-  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system" | "info" | "command" | "agent_start" | "agent_tool_use" | "agent_tool_result" | "agent_result" | "queued";
+  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system" | "info" | "command" | "agent_start" | "agent_tool_use" | "agent_tool_result" | "agent_result" | "queued" | "task_notification";
   content: string;
   toolName?: string;
   toolInput?: Record<string, unknown>;
@@ -23,7 +23,6 @@ export interface DisplayMessage {
 interface MessageListProps {
   messages: DisplayMessage[];
   currentText: string;
-  agentText: string;
 }
 
 function formatToolLabel(name: string, input?: Record<string, unknown>): string {
@@ -53,6 +52,75 @@ function formatElapsed(ms: number | undefined): string {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   return `${m}m ${s}s`;
+}
+
+/** Format milliseconds as "Xm Ys" or "Ys". */
+function formatMs(ms: number): string {
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}m ${s}s`;
+}
+
+/** Hook that returns elapsed seconds since startMs, updating every second. */
+function useAgentElapsed(startMs: number | null): number {
+  const [elapsed, setElapsed] = React.useState(0);
+  React.useEffect(() => {
+    if (startMs === null) {
+      setElapsed(0);
+      return;
+    }
+    const update = () => setElapsed(Date.now() - startMs!);
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [startMs]);
+  return elapsed;
+}
+
+/** Agent start message with live elapsed timer, updates to Done on completion. */
+function AgentStartItem({ msg }: { msg: DisplayMessage }) {
+  const agentMeta = msg.metadata as {
+    agent_type?: string; description?: string; prompt?: string;
+    _startMs?: number; _tool_use_count?: number;
+    _done?: boolean; _finalElapsed?: string;
+  } | undefined;
+  const rawType = agentMeta?.agent_type || "Agent";
+  const agentType = rawType === "general-purpose" ? rawType : `${rawType} Agent`;
+  const agentPrompt = agentMeta?.prompt || "";
+  const startMs = agentMeta?._startMs || null;
+  const toolCount = agentMeta?._tool_use_count || 0;
+  const isDone = agentMeta?._done || false;
+  const finalElapsed = agentMeta?._finalElapsed || "";
+  const elapsedMs = useAgentElapsed(isDone ? null : startMs);
+  return (
+    <Box marginTop={1} marginLeft={2} flexDirection="column">
+      <Box>
+        <Text color="magenta" bold>{`⏎ ${agentType}`}</Text>
+        {isDone && finalElapsed && <Text dimColor>{` (${finalElapsed})`}</Text>}
+        {!isDone && elapsedMs > 0 && <Text dimColor>{` (${formatMs(elapsedMs)})`}</Text>}
+      </Box>
+      <Box marginLeft={2}>
+        {isDone ? (
+          <>
+            <Text dimColor>⎿  Done</Text>
+            <Text dimColor>{` · ${toolCount} tools used`}</Text>
+          </>
+        ) : (
+          <>
+            <Text dimColor>⎿  Running</Text>
+            <Text dimColor>{` · ${toolCount} tools used`}</Text>
+          </>
+        )}
+      </Box>
+      {agentPrompt && (
+        <Box marginLeft={4}>
+          <Text dimColor>{agentPrompt}</Text>
+        </Box>
+      )}
+    </Box>
+  );
 }
 
 function MessageItem({ msg }: { msg: DisplayMessage }) {
@@ -171,23 +239,7 @@ function MessageItem({ msg }: { msg: DisplayMessage }) {
     }
 
     case "agent_start": {
-      const agentMeta = msg.metadata as { agent_type?: string; description?: string; prompt?: string } | undefined;
-      const rawType = agentMeta?.agent_type || "Agent";
-      const agentType = rawType === "general-purpose" ? rawType : `${rawType} Agent`;
-      const agentPrompt = agentMeta?.prompt || "";
-      return (
-        <Box marginTop={1} marginLeft={2} flexDirection="column">
-          <Box>
-            <Text color="magenta">⏎ </Text>
-            <Text color="magenta" bold>{agentType}</Text>
-          </Box>
-          {agentPrompt && (
-            <Box marginLeft={2}>
-              <Text dimColor>{agentPrompt}</Text>
-            </Box>
-          )}
-        </Box>
-      );
+      return <AgentStartItem msg={msg} />;
     }
 
     case "agent_tool_use": {
@@ -219,20 +271,54 @@ function MessageItem({ msg }: { msg: DisplayMessage }) {
     }
 
     case "agent_result": {
-      const resultMeta = msg.metadata as { _elapsed?: string; agent_type?: string } | undefined;
+      const resultMeta = msg.metadata as { _elapsed?: string; agent_type?: string; tool_use_count?: number } | undefined;
       const rawType = resultMeta?.agent_type || "Agent";
       const agentType = rawType === "general-purpose" ? rawType : `${rawType} Agent`;
-      const elapsed = resultMeta?._elapsed || "";
       return (
-        <Box marginLeft={2} flexDirection="column">
-          <Box>
-            <Text dimColor>⎿  </Text>
-            <Text color="magenta" bold>{agentType}</Text>
-            <Text dimColor> finished</Text>
+        <Box marginLeft={2}>
+          <Text color="magenta" bold>{`⏎ ${agentType}`}</Text>
+          <Text dimColor> Done.</Text>
+        </Box>
+      );
+    }
+
+    case "task_notification": {
+      const meta = msg.metadata as { result?: string; isFailed?: boolean; isStarted?: boolean; description?: string } | undefined;
+      const desc = meta?.description || "";
+      // Started notification — yellow with ⎿ description
+      if (meta?.isStarted) {
+        return (
+          <Box marginTop={1} marginLeft={2} flexDirection="column">
+            <Text color="yellow" dimColor>{msg.content}</Text>
+            {desc && (
+              <Box marginLeft={2}>
+                <Text dimColor>{`⎿  ${desc}`}</Text>
+              </Box>
+            )}
           </Box>
-          {elapsed && (
-            <Box marginLeft={4}>
-              <Text dimColor>Done ({elapsed})</Text>
+        );
+      }
+      // Completion notification — green/red with ⎿ description + result preview
+      const resultText = meta?.result || "";
+      const iconColor = meta?.isFailed ? "red" : "green";
+      // Take first 10 non-empty lines of result
+      const resultLines = resultText.split("\n").filter((l: string) => l.trim());
+      const previewLines = resultLines.slice(0, 10);
+      const truncated = resultLines.length > 10;
+      return (
+        <Box marginTop={1} marginLeft={2} flexDirection="column">
+          <Text bold color={iconColor}>{msg.content}</Text>
+          {desc && (
+            <Box marginLeft={2}>
+              <Text dimColor>{`⎿  ${desc}`}</Text>
+            </Box>
+          )}
+          {previewLines.length > 0 && (
+            <Box marginLeft={2} flexDirection="column">
+              {previewLines.map((line: string, i: number) => (
+                <Text key={i} dimColor>{line}</Text>
+              ))}
+              {truncated && <Text dimColor>...</Text>}
             </Box>
           )}
         </Box>
@@ -253,12 +339,6 @@ export function MessageList({ messages, currentText, agentText }: MessageListPro
       ))}
       {/* Streaming text: real-time Markdown rendering with incomplete-token tolerance */}
       {currentText && <StreamingMarkdown>{currentText}</StreamingMarkdown>}
-      {/* Sub-agent streaming text: Markdown rendering with indent */}
-      {agentText && (
-        <Box marginLeft={2}>
-          <StreamingMarkdown>{agentText}</StreamingMarkdown>
-        </Box>
-      )}
     </Box>
   );
 }

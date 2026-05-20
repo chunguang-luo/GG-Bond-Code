@@ -17,8 +17,10 @@ Key design:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,10 @@ from typing import Any
 from .bash_exit_codes import interpret_exit_code
 from .bash_semantics import classify_pipeline, is_silent_command, CommandSemantic
 from .bash_input_validation import validate_bash_input
+from ..tasks.types import TaskStateBase, TaskType, TaskStatus, generate_task_id
+from ..tasks.registry import get_task_registry
+
+logger = logging.getLogger(__name__)
 
 
 # --- Constants (mirrors BashTool.tsx) ---
@@ -86,6 +92,7 @@ class BashExecutor:
         timeout_ms: int | None = None,
         run_in_background: bool = False,
         working_dir: str | None = None,
+        description: str = "",
     ) -> ExecResult:
         """Execute a shell command and return a structured result.
 
@@ -94,6 +101,7 @@ class BashExecutor:
             timeout_ms: Timeout in milliseconds (default: 120000).
             run_in_background: If True, don't wait for completion.
             working_dir: Working directory for the command.
+            description: Short description for background task display.
 
         Returns:
             ExecResult with structured output and semantic info.
@@ -111,7 +119,14 @@ class BashExecutor:
         semantic = classify_pipeline(command)
         silent = is_silent_command(command)
 
-        # 3. Execute
+        # 2b. Background execution
+        if run_in_background:
+            return await self._execute_background(
+                command, working_dir=working_dir, semantic=semantic,
+                description=description,
+            )
+
+        # 3. Execute (foreground)
         timeout_s = (timeout_ms or self._default_timeout_ms) / 1000
 
         try:
@@ -235,3 +250,95 @@ class BashExecutor:
             return str(path)
         except Exception:
             return ""
+
+    async def _execute_background(
+        self,
+        command: str,
+        *,
+        working_dir: str | None = None,
+        semantic: CommandSemantic = CommandSemantic.UNKNOWN,
+        description: str = "",
+    ) -> ExecResult:
+        """Execute a command in the background — register in TaskRegistry, return immediately.
+
+        The command runs asynchronously. The main query loop will wait for
+        all background tasks to complete before finishing.
+        """
+        registry = get_task_registry()
+        task_id = generate_task_id(TaskType.LOCAL_BASH)
+
+        # Create output file for capturing stdout/stderr
+        output_dir = Path(tempfile.gettempdir()) / "nextcode-tasks"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(output_dir / f"{task_id}.output")
+
+        # Create task state
+        task = TaskStateBase(
+            id=task_id,
+            type=TaskType.LOCAL_BASH,
+            status=TaskStatus.RUNNING,
+            command=command,
+            description=description[:50] if description else "",
+            started_at=time.monotonic(),
+            _output_path=output_path,
+        )
+        registry.register(task)
+
+        # Start the subprocess
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=working_dir,
+            )
+        except Exception as e:
+            registry.update(task_id, status=TaskStatus.FAILED, result=str(e))
+            return ExecResult(is_error=True, stderr=str(e), exit_code=-1, semantic=semantic)
+
+        # Store process handle for kill support
+        task._process = proc
+        registry.update(task_id)
+
+        # Fire-and-forget: collect output when process finishes
+        async def _background_wait() -> None:
+            try:
+                stdout_bytes, stderr_bytes = await proc.communicate()
+                exit_code = proc.returncode or 0
+
+                stdout = stdout_bytes.decode(errors="replace")
+                stderr = stderr_bytes.decode(errors="replace")
+
+                # Write output to file
+                try:
+                    Path(output_path).write_text(
+                        f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}\n\nEXIT CODE: {exit_code}",
+                        errors="replace",
+                    )
+                except Exception:
+                    logger.warning("Failed to write output for task %s", task_id)
+
+                # Update task state
+                status = TaskStatus.COMPLETED if exit_code == 0 else TaskStatus.FAILED
+                result_preview = stdout[:500] if stdout else stderr[:500]
+                registry.update(task_id, status=status, result=result_preview)
+
+                logger.info("Background task %s finished with exit code %d", task_id, exit_code)
+
+            except asyncio.CancelledError:
+                registry.update(task_id, status=TaskStatus.KILLED, result="Cancelled")
+            except Exception as e:
+                logger.exception("Background task %s failed", task_id)
+                registry.update(task_id, status=TaskStatus.FAILED, result=str(e))
+
+        aio_task = asyncio.create_task(_background_wait())
+        task._asyncio_task = aio_task
+        registry.update(task_id)
+
+        return ExecResult(
+            stdout=f"Background task started: {task_id}",
+            stderr="",
+            exit_code=0,
+            is_error=False,
+            semantic=semantic,
+        )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import traceback
 from dataclasses import dataclass, field
@@ -343,8 +344,16 @@ class QueryRunner:
                         ]
                     messages.append(msg)
 
-                # If no tool use, we're done
+                # If no tool use, the model is about to finish.
+                # Before exiting, wait for any background tasks and inject results.
                 if not has_tool_use:
+                    pending = await self._await_background_tasks()
+                    if pending:
+                        # Inject background task results so the model can
+                        # summarize or take follow-up action before finishing.
+                        messages.append({"role": "user", "content": pending})
+                        yield QueryEvent(type="thinking", content="[等待后台任务完成，继续生成]")
+                        continue
                     self._loop_state.set_transition(TransitionReason.DONE, detail="no tool use")
                     break
 
@@ -477,6 +486,52 @@ class QueryRunner:
                         "effective_window": warning.effective_window,
                     },
                 )
+
+    async def _await_background_tasks(self) -> str:
+        """Wait for running background tasks and return a summary of their results.
+
+        Returns an empty string if no tasks are running, or a formatted summary
+        of completed task results to inject as a user message.
+        """
+        from .tasks.registry import get_task_registry
+        from .tasks.types import TaskType, TaskStatus
+
+        registry = get_task_registry()
+        running = registry.list_running()
+        if not running:
+            return ""
+
+        # Collect asyncio tasks to wait for
+        aio_tasks = []
+        for task in running:
+            if task._asyncio_task is not None:
+                aio_tasks.append(task._asyncio_task)
+
+        if aio_tasks:
+            # Wait for all background tasks to complete (max 10 minutes)
+            try:
+                await asyncio.wait(aio_tasks, timeout=600)
+            except Exception:
+                pass
+
+        # Collect results from completed tasks
+        parts: list[str] = []
+        for task in registry.list_all():
+            if task.id not in {t.id for t in running}:
+                continue
+            if not task.is_terminal():
+                parts.append(f"- 任务 {task.id} ({task.type.value}): 仍在运行中")
+                continue
+            type_label = "Agent" if task.type == TaskType.LOCAL_AGENT else "Shell"
+            status = "完成" if task.status == TaskStatus.COMPLETED else f"失败({task.status.value})"
+            desc = task.description or task.command[:80]
+            result = (task.result or "")[:2000]
+            parts.append(f"- {type_label} {task.id} ({desc}): {status}\n{result}")
+
+        if not parts:
+            return ""
+
+        return "[后台任务结果]\n" + "\n\n".join(parts) + "\n\n请基于以上后台任务结果继续回答用户的问题。"
 
     async def _check_permission(self, tool_name: str, params: dict[str, Any]) -> PermissionDecision:
         """Check permission, invoking callback for ASK decisions."""

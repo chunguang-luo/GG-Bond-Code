@@ -58,10 +58,45 @@ def get_content() -> str:
 才使用子 Agent
 - 提供清晰、具体的提示词和所有必要上下文 — 子 Agent 无法追问
 - 子 Agent 仅返回最终结论 — 中间搜索结果会被过滤，节省上下文预算
-- 任务独立时可在一条消息中发起多个工具调用，并行启动多个子 Agent
+- 任务独立时可在一条消息中发起多个工具调用，并行启动多个**不同类型**的子 Agent
 - 永远不要委派理解 — 如果委托子 Agent 做研究，不要自己做相同的搜索
+- **禁止重复派 Agent** — 同一类型、同一任务的 Agent 只能有一个。\
+不要为同一个任务创建第二个相同类型的 Agent。\
+例如：已经派了一个 Explore Agent 搜索代码，就不要再派另一个 Explore Agent 做同样的搜索。\
+如果你发现之前的 Agent 结果不够，请直接使用工具补充，而不是再派一个 Agent。
 - 把子 Agent 当作刚走进来的聪明同事来简报 — \
-它没看到你的对话，不知道你尝试过什么"""
+它没看到你的对话，不知道你尝试过什么
+
+### 后台 Agent（run_in_background=true）
+
+**只有在同一条消息中同时派多个子 Agent 时，才设置 `run_in_background=true`。**
+只派一个 Agent 时，永远不要设为后台——前台执行可以实时看到输出。
+
+**应该使用后台执行：**
+- 同时派 2 个以上子 Agent 并行处理独立任务（Coordinator 模式）\
+— 例如一条消息中同时启动一个搜索前端代码、一个搜索后端代码
+
+**绝对不要使用后台执行：**
+- 只有一个子 Agent — 前台执行，不要设 run_in_background
+- 需要等 Agent 结果才能继续 — 前台等待
+- 需要子 Agent 结果才能继续当前工作 — 前台等待结果
+
+**后台 Agent 的 prompt 要简短聚焦：**
+- 每个子 Agent 只做一件事，不要把多个不相关的任务塞进一个 prompt
+- 复杂任务拆分成多个并行的子 Agent，每个处理一个独立子任务
+- prompt 控制在 1-2 句话内，明确目标即可
+- 例如：不要写"搜索前端和后端的所有 API"，而是拆成两个 Agent 分别搜索
+
+**使用方式：**
+```json
+{"name": "Agent", "arguments": {
+  "prompt": "搜索所有 API 端点定义",
+  "subagent_type": "Explore",
+  "run_in_background": true
+}}
+```
+后台 Agent 启动后返回 task_id，主流程会等待所有后台任务完成后自动获取结果并继续生成。\
+你也可以用 TaskOutput 手动查看进度，用 TaskStop 终止运行。"""
 
 
 # Section function - returns content when called

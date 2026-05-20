@@ -87,6 +87,9 @@ class IPCBridge:
         from ..skills.conditional import ConditionalSkillManager
         self._conditional_manager = ConditionalSkillManager()
 
+        # Register task poller to send IPC events for frontend UI
+        self._register_task_poller()
+
         # Register message handler
         self.transport.on_message(self._handle_message)
 
@@ -252,6 +255,7 @@ class IPCBridge:
         "tool_result": CoreToInk.AGENT_TOOL_RESULT.value,
         "agent_start": CoreToInk.AGENT_START.value,
         "agent_result": CoreToInk.AGENT_RESULT.value,
+        "agent_progress": CoreToInk.AGENT_PROGRESS.value,
     }
 
     async def _emit_event(self, event: QueryEvent) -> None:
@@ -339,6 +343,13 @@ class IPCBridge:
                 "agent_id": agent_id,
                 "agent_type": event.metadata.get("agent_type", "unknown"),
                 "elapsed": elapsed_str,
+                "tool_use_count": event.metadata.get("tool_use_count", 0),
+            }
+
+        elif event.type == "agent_progress":
+            payload = {
+                "agent_id": event.metadata.get("agent_id", ""),
+                "tool_use_count": event.metadata.get("tool_use_count", 0),
             }
 
         # msg_type is either a CoreToInk enum (parent events) or a str (agent events)
@@ -542,3 +553,67 @@ class IPCBridge:
         await self.transport.send_event(CoreToInk.COMMANDS_UPDATE.value, {
             "commands": commands,
         })
+
+    # ── Task polling for frontend UI ─────────────────────────────────────
+
+    def _register_task_poller(self) -> None:
+        """Register a periodic poll to send task IPC events to the frontend.
+
+        Sends TASK_STARTED / TASK_COMPLETED / TASK_FAILED events and task count
+        updates so the frontend can display background task notifications.
+        The model-side waiting is handled by QueryRunner._await_background_tasks().
+        """
+        from ..tasks.registry import get_task_registry
+        from ..tasks.types import TaskStatus, TaskType
+
+        seen_task_ids: set[str] = set()
+
+        async def _poll_tasks() -> None:
+            while True:
+                await asyncio.sleep(2.0)
+                try:
+                    registry = get_task_registry()
+                    # Send running task count
+                    bash_count, agent_count = registry.running_count()
+                    await self.transport.send_event(
+                        CoreToInk.TASK_COUNT.value,
+                        {"bash": bash_count, "agent": agent_count},
+                    )
+                    # Announce newly started tasks
+                    for task in registry.list_all():
+                        if task.id not in seen_task_ids:
+                            seen_task_ids.add(task.id)
+                            if task.status == TaskStatus.RUNNING:
+                                desc = task.description or task.command[:50]
+                                await self.transport.send_event(
+                                    CoreToInk.TASK_STARTED.value,
+                                    {
+                                        "task_id": task.id,
+                                        "task_type": task.type.value,
+                                        "description": desc,
+                                    },
+                                )
+                    # Announce newly completed tasks
+                    for task in registry.list_all():
+                        if task.is_terminal() and not task.notified:
+                            if registry.mark_notified(task.id):
+                                event_type = (
+                                    CoreToInk.TASK_COMPLETED.value
+                                    if task.status == TaskStatus.COMPLETED
+                                    else CoreToInk.TASK_FAILED.value
+                                )
+                                result_preview = (task.result or "")[:2000]
+                                desc = task.description or task.command[:50]
+                                await self.transport.send_event(event_type, {
+                                    "task_id": task.id,
+                                    "task_type": task.type.value,
+                                    "status": task.status.value,
+                                    "result": result_preview,
+                                    "description": desc,
+                                })
+                    # Evict old terminal tasks
+                    registry.evict_terminal()
+                except Exception:
+                    logger.exception("Task poll error")
+
+        asyncio.create_task(_poll_tasks())

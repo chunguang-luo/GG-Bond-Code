@@ -43,9 +43,13 @@ def test_default_timeout():
 
 def test_retry_config():
     """Retry configuration is sensible."""
-    assert _MAX_RETRIES == 3
-    assert len(_RETRY_DELAYS) == 3
-    assert _RETRY_DELAYS == [1.0, 2.0, 4.0]
+    from next_code.api.retry import RetryPolicy
+
+    policy = RetryPolicy()
+    assert policy.max_retries == 10
+    assert policy.base_delay_ms == 500
+    assert policy.delay_multipliers == [1, 2, 4]
+    assert policy.respect_retry_after is True
 
 
 def test_is_retryable_429():

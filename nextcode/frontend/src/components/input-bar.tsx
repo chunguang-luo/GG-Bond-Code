@@ -5,7 +5,7 @@
  * arrow keys to move cursor, and displays completion suggestions.
  */
 
-import React, { useMemo } from "react";
+import React, { useMemo, useRef } from "react";
 import { Box, Text, useInput } from "ink";
 import { CommandInfo } from "../ipc/protocol";
 
@@ -57,6 +57,11 @@ export function InputBar({
     return map;
   }, [commands]);
 
+  // Input history — persists across the session
+  const historyRef = useRef<string[]>([]);
+  const historyIndexRef = useRef(-1);  // -1 = not browsing history
+  const draftRef = useRef("");  // Save current draft when entering history
+
   // Compute matching commands for the current input
   const matchingCommands = useMemo(() => {
     if (!inputState.value.startsWith("/")) return [];
@@ -68,8 +73,44 @@ export function InputBar({
     (input, key) => {
       if (key.return) {
         if (inputState.value.trim()) {
-          onSubmit(inputState.value);
+          // Save to history (skip duplicates)
+          const val = inputState.value;
+          const hist = historyRef.current;
+          if (hist.length === 0 || hist[hist.length - 1] !== val) {
+            hist.push(val);
+            // Keep max 100 entries
+            if (hist.length > 100) hist.shift();
+          }
+          historyIndexRef.current = -1;
+          draftRef.current = "";
+          onSubmit(val);
           setInputState({ value: "", cursor: 0 });
+        }
+      } else if (key.upArrow) {
+        // Navigate history backward (older)
+        const hist = historyRef.current;
+        if (hist.length === 0) return;
+        if (historyIndexRef.current === -1) {
+          // Save current draft before entering history
+          draftRef.current = inputState.value;
+          historyIndexRef.current = hist.length - 1;
+        } else if (historyIndexRef.current > 0) {
+          historyIndexRef.current -= 1;
+        }
+        const prev = hist[historyIndexRef.current];
+        setInputState({ value: prev, cursor: prev.length });
+      } else if (key.downArrow) {
+        // Navigate history forward (newer)
+        if (historyIndexRef.current === -1) return;
+        const hist = historyRef.current;
+        if (historyIndexRef.current < hist.length - 1) {
+          historyIndexRef.current += 1;
+          const next = hist[historyIndexRef.current];
+          setInputState({ value: next, cursor: next.length });
+        } else {
+          // Back to the draft
+          historyIndexRef.current = -1;
+          setInputState({ value: draftRef.current, cursor: draftRef.current.length });
         }
       } else if (key.tab) {
         // Tab-complete slash commands
