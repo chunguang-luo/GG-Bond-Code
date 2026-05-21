@@ -5,7 +5,7 @@ services/tools/StreamingToolExecutor.ts, with concurrency-safe partitioning
 from toolOrchestration.ts.
 
 Key design:
-- Tools are added to a queue as tool_use blocks arrive during streaming
+- Tools are added to pending list as tool_use blocks arrive during streaming
 - Concurrent-safe tools (Read, Glob, Grep) run in parallel (up to max_concurrent)
 - Non-concurrent tools (Edit, Write, Bash) run serially
 - discard() cancels all pending/running tools (used on streaming fallback)
@@ -86,7 +86,6 @@ class StreamingToolExecutor:
         self.registry = registry
         self.max_concurrent = max_concurrent
         self._context = context
-        self._queue: asyncio.Queue[ToolExecution] = asyncio.Queue()
         self._pending: list[ToolExecution] = []
         self._completed: list[ToolExecution] = []
         self._discarded: bool = False
@@ -112,7 +111,6 @@ class StreamingToolExecutor:
             is_concurrency_safe=is_safe,
         )
         self._pending.append(execution)
-        await self._queue.put(execution)
 
     async def execute_all(
         self,
@@ -227,6 +225,7 @@ class StreamingToolExecutor:
                     "name": tc.tool_name,
                     "output": tc.result.output,
                     "error": tc.result.error,
+                    "metadata": tc.result.metadata,
                 })
         return results
 
@@ -260,11 +259,6 @@ class StreamingToolExecutor:
         # Clear all state
         self._pending.clear()
         self._completed.clear()
-        while not self._queue.empty():
-            try:
-                self._queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
 
     @property
     def is_discarded(self) -> bool:

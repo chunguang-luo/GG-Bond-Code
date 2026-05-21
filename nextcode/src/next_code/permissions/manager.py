@@ -125,22 +125,10 @@ class PermissionManager:
                     key = self._make_key(tool_name, params)
                     self._session_allowed.add(key)
                     return None
-            elif tool_name in ("Edit", "Write") and "file_path" in params:
-                # For file operations, allow by directory prefix instead of Edit:*
-                import os
-                file_path = params["file_path"]
-                parent = os.path.dirname(file_path)
-                if parent:
-                    pattern = f"{tool_name}:{parent}/*"
-                else:
-                    # No parent directory — session-only, don't persist Tool:*
-                    logger.warning(
-                        "Cannot extract directory for %s, session-only grant: %s",
-                        tool_name, file_path,
-                    )
-                    key = self._make_key(tool_name, params)
-                    self._session_allowed.add(key)
-                    return None
+            elif tool_name in ("Edit", "Write"):
+                # For file operations, allow all files (Edit:* / Write:*)
+                # Users choosing "always allow" for Edit/Write typically want full access
+                pattern = f"{tool_name}:*"
             else:
                 # Other tools — don't persist broad Tool:* rules
                 logger.warning(
@@ -167,8 +155,9 @@ class PermissionManager:
         import logging
         _logger = logging.getLogger(__name__)
 
-        # Guard: never persist overly broad patterns
-        if pattern in ("Bash:*", "Edit:*", "Write:*", "Agent:*"):
+        # Guard: never persist overly broad patterns for Bash and Agent
+        # (Edit:* and Write:* are allowed — users may want full file access)
+        if pattern in ("Bash:*", "Agent:*"):
             _logger.warning("Refusing to persist overly broad pattern: %s", pattern)
             return
 

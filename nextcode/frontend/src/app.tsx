@@ -49,7 +49,8 @@ function useElapsedTime(startMs: number | null): number {
 
   useEffect(() => {
     if (startMs === null) {
-      setElapsed(0);
+      // No need to setElapsed(0) — causes an extra re-render.
+      // The component using this already hides itself when startMs is null.
       if (timerRef.current !== null) {
         clearInterval(timerRef.current);
         timerRef.current = null;
@@ -89,6 +90,26 @@ export function App({ transport }: AppProps) {
 
   // Background task tracking: count of running bash/agent tasks
   const [bgTaskCount, setBgTaskCount] = useState({ bash: 0, agent: 0 });
+
+  // Real-time task output: task_id -> output lines (for running tasks)
+  // Each entry stores the last N lines received for that task
+  const [taskOutputs, setTaskOutputs] = useState<Map<string, string>>(new Map());
+  // Ref for batching task output updates — avoids re-rendering on every output chunk
+  const taskOutputBatchRef = useRef<Map<string, string>>(new Map());
+  const taskOutputFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Task state: full info for each task (running + completed)
+  // Used for task panel and retain/stop interactions
+  interface TaskInfo {
+    task_id: string;
+    task_type: string;
+    status: "pending" | "running" | "completed" | "failed" | "killed";
+    description: string;
+    retain: boolean;
+    started_at: number;
+    result?: string;
+  }
+  const [tasks, setTasks] = useState<Map<string, TaskInfo>>(new Map());
 
   // Current running tool info — shown in the status bar during execution
   const [currentTool, setCurrentTool] = useState<string | null>(null);
@@ -132,11 +153,14 @@ export function App({ transport }: AppProps) {
     }
   }, []);
 
-  // Cleanup timer on unmount
+  // Cleanup timers on unmount
   useEffect(() => {
     return () => {
       if (flushTimerRef.current !== null) {
         clearTimeout(flushTimerRef.current);
+      }
+      if (taskOutputFlushRef.current !== null) {
+        clearTimeout(taskOutputFlushRef.current);
       }
     };
   }, []);
@@ -241,6 +265,7 @@ export function App({ transport }: AppProps) {
             toolResult?: string;
             toolError?: boolean;
             elapsedMs?: number;
+            toolMetadata?: Record<string, unknown>;
           };
           setMessages((prev) => [
             ...prev,
@@ -252,6 +277,7 @@ export function App({ transport }: AppProps) {
               toolResult: result.toolResult,
               toolError: result.toolError,
               elapsedMs: result.elapsedMs,
+              metadata: result.toolMetadata,
             },
           ]);
           break;
@@ -363,6 +389,20 @@ export function App({ transport }: AppProps) {
           if (flushTimerRef.current !== null) {
             clearTimeout(flushTimerRef.current);
             flushTimerRef.current = null;
+          }
+          // Flush any pending task output batch
+          if (taskOutputFlushRef.current !== null) {
+            clearTimeout(taskOutputFlushRef.current);
+            taskOutputFlushRef.current = null;
+            const batch = taskOutputBatchRef.current;
+            taskOutputBatchRef.current = new Map();
+            setTaskOutputs((prev) => {
+              const next = new Map(prev);
+              for (const [id, output] of batch) {
+                next.set(id, output);
+              }
+              return next;
+            });
           }
           finalizeCurrentText();
           setCurrentTool(null);
@@ -521,18 +561,56 @@ export function App({ transport }: AppProps) {
           break;
         }
 
+        case CoreToInk.TASK_OUTPUT: {
+          // Real-time output streaming for running tasks
+          // Batch updates: accumulate in ref, flush to state at ~2fps
+          const to = msg.payload as { task_id?: string; output?: string; is_running?: boolean };
+          if (to.task_id && to.output !== undefined) {
+            taskOutputBatchRef.current.set(to.task_id!, to.output || "");
+            if (taskOutputFlushRef.current === null) {
+              taskOutputFlushRef.current = setTimeout(() => {
+                taskOutputFlushRef.current = null;
+                const batch = taskOutputBatchRef.current;
+                taskOutputBatchRef.current = new Map();
+                setTaskOutputs((prev) => {
+                  const next = new Map(prev);
+                  for (const [id, output] of batch) {
+                    next.set(id, output);
+                  }
+                  return next;
+                });
+              }, 500);
+            }
+          }
+          break;
+        }
+
         case CoreToInk.TASK_STARTED: {
           const ts = msg.payload as { task_id?: string; task_type?: string; description?: string };
           const typeLabel = ts.task_type === "local_agent" ? "Agent" : "Shell";
+          const taskId = ts.task_id || "";
           setMessages((prev) => [
             ...prev,
             {
               id: nextId(),
               type: "task_notification",
-              content: `⏳ Background ${typeLabel} started: ${ts.task_id || ""}`,
+              content: `⏳ Background ${typeLabel} started: ${taskId}`,
               metadata: { isStarted: true, description: ts.description || "" },
             },
           ]);
+          // Update task state
+          setTasks((prev) => {
+            const next = new Map(prev);
+            next.set(taskId, {
+              task_id: taskId,
+              task_type: ts.task_type || "local_bash",
+              status: "running",
+              description: ts.description || "",
+              retain: false,
+              started_at: Date.now(),
+            });
+            return next;
+          });
           break;
         }
 
@@ -542,20 +620,86 @@ export function App({ transport }: AppProps) {
           const isFailed = msg.type === CoreToInk.TASK_FAILED;
           const icon = isFailed ? "✗" : "✓";
           const typeLabel = tf.task_type === "local_agent" ? "Agent" : "Shell";
+          const taskId = tf.task_id || "";
+          // Use the streamed output if available, otherwise use result
+          const streamedOutput = taskOutputs.get(taskId);
+          const outputToShow = streamedOutput || tf.result || "";
           const notification: DisplayMessage = {
             id: nextId(),
             type: "task_notification",
             content: `${icon} Background ${typeLabel} ${isFailed ? "failed" : "completed"}`,
             metadata: {
-              result: tf.result || "",
+              result: outputToShow,
               isFailed,
               description: tf.description || "",
             },
           };
+          // Clean up streamed output for this task
+          taskOutputBatchRef.current.delete(taskId);
+          setTaskOutputs((prev) => {
+            const next = new Map(prev);
+            next.delete(taskId);
+            return next;
+          });
+          // Update task state to completed/failed
+          setTasks((prev) => {
+            const next = new Map(prev);
+            const existing = next.get(taskId);
+            if (existing) {
+              next.set(taskId, {
+                ...existing,
+                status: isFailed ? "failed" : "completed",
+                result: outputToShow,
+              });
+            } else {
+              next.set(taskId, {
+                task_id: taskId,
+                task_type: tf.task_type || "local_bash",
+                status: isFailed ? "failed" : "completed",
+                description: tf.description || "",
+                retain: false,
+                started_at: Date.now(),
+                result: outputToShow,
+              });
+            }
+            return next;
+          });
           if (isQueryRunning) {
             pendingNotificationsRef.current.push(notification);
           } else {
             setMessages((prev) => [...prev, notification]);
+          }
+          break;
+        }
+
+        case CoreToInk.TASK_STALLED: {
+          // Task may be waiting for interactive input (e.g., apt/yum confirmation)
+          const stall = msg.payload as { task_id?: string; prompt_type?: string; message?: string };
+          const taskId = stall.task_id || "";
+          const typeLabel = stall.prompt_type || "interactive prompt";
+          const notif: DisplayMessage = {
+            id: nextId(),
+            type: "task_notification",
+            content: `⚠️ Task ${taskId} may be stalled: ${typeLabel}`,
+            metadata: {
+              isStalled: true,
+              promptType: stall.prompt_type || "",
+              message: stall.message || "",
+            },
+          };
+          // Mark task as stalled in task state
+          setTasks((prev) => {
+            const next = new Map(prev);
+            const existing = next.get(taskId);
+            if (existing) {
+              next.set(taskId, { ...existing });
+            }
+            return next;
+          });
+          if (isQueryRunning) {
+            pendingNotificationsRef.current.push(notif);
+          } else {
+            setMessages((prev) => [...prev, notif]);
           }
           break;
         }
@@ -641,6 +785,40 @@ export function App({ transport }: AppProps) {
     [transport, permissionRequest]
   );
 
+  // ── Task control handlers ────────────────────────────────────────────────
+
+  const handleTaskStop = useCallback(
+    (taskId: string) => {
+      transport.sendEvent(InkToCore.TASK_STOP, { task_id: taskId });
+      // Update local state
+      setTasks((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(taskId);
+        if (existing) {
+          next.set(taskId, { ...existing, status: "killed" });
+        }
+        return next;
+      });
+    },
+    [transport]
+  );
+
+  const handleTaskRetain = useCallback(
+    (taskId: string, retain: boolean) => {
+      transport.sendEvent(InkToCore.TASK_RETAIN, { task_id: taskId, retain });
+      // Update local state
+      setTasks((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(taskId);
+        if (existing) {
+          next.set(taskId, { ...existing, retain });
+        }
+        return next;
+      });
+    },
+    [transport]
+  );
+
   // ── Format elapsed time ──────────────────────────────────────────────────
 
   const formatElapsed = (sec: number): string => {
@@ -677,6 +855,21 @@ export function App({ transport }: AppProps) {
               bgTaskCount.agent > 0 && `${bgTaskCount.agent} agent`,
             ].filter(Boolean).join(", ")}</Text>
           )}
+        </Box>
+      )}
+      {/* Show background task output while tasks are running */}
+      {taskOutputs.size > 0 && (
+        <Box flexDirection="column" marginTop={0} marginLeft={1}>
+          {Array.from(taskOutputs.entries()).map(([taskId, output]) => (
+            <Box key={taskId} flexDirection="column">
+              <Text dimColor>{`⎿  ${taskId}:`}</Text>
+              <Box marginLeft={4}>
+                {output.split("\n").slice(-5).map((line, i) => (
+                  <Text key={i} dimColor>{line}</Text>
+                ))}
+              </Box>
+            </Box>
+          ))}
         </Box>
       )}
       {/* Show background task count even when not thinking */}

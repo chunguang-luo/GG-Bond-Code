@@ -30,8 +30,39 @@ from .bash_semantics import classify_pipeline, is_silent_command, CommandSemanti
 from .bash_input_validation import validate_bash_input
 from ..tasks.types import TaskStateBase, TaskType, TaskStatus, generate_task_id
 from ..tasks.registry import get_task_registry
+from ..tasks.disk_output import DiskTaskOutput
+from ..tasks.stall_watchdog import start_watchdog, stop_watchdog, record_task_output
 
 logger = logging.getLogger(__name__)
+
+
+# --- Stall watchdog callback ─────────────────────────────────────────────────
+
+
+def _create_stall_callback() -> callable:
+    """Create the stall notification callback for the IPC bridge.
+
+    When a stall is detected, this sends a notification to the frontend
+    so the model can decide whether to kill or handle the stalled task.
+    """
+    # Get the IPC bridge's emit function from the global context
+    # This is a lazy import to avoid circular dependencies
+    def on_stall_detected(task_id: str, prompt_type: str) -> None:
+        from ..ipc.bridge import get_stall_notification_callback
+        callback = get_stall_notification_callback()
+        if callback:
+            try:
+                # Run in the event loop to avoid blocking
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(callback(task_id, prompt_type))
+                else:
+                    loop.run_until_complete(callback(task_id, prompt_type))
+            except Exception:
+                logger.exception("Failed to send stall notification for %s", task_id)
+
+    return on_stall_detected
 
 
 # --- Constants (mirrors BashTool.tsx) ---
@@ -267,7 +298,7 @@ class BashExecutor:
         registry = get_task_registry()
         task_id = generate_task_id(TaskType.LOCAL_BASH)
 
-        # Create output file for capturing stdout/stderr
+        # Create output directory and path
         output_dir = Path(tempfile.gettempdir()) / "nextcode-tasks"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = str(output_dir / f"{task_id}.output")
@@ -284,7 +315,10 @@ class BashExecutor:
         )
         registry.register(task)
 
-        # Start the subprocess
+        # Create DiskTaskOutput for streaming output to disk
+        disk_output = DiskTaskOutput(output_path)
+
+        # Start the subprocess with piped stdout/stderr
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
@@ -296,27 +330,28 @@ class BashExecutor:
             registry.update(task_id, status=TaskStatus.FAILED, result=str(e))
             return ExecResult(is_error=True, stderr=str(e), exit_code=-1, semantic=semantic)
 
-        # Store process handle for kill support
+        # Store process and disk_output handles for kill support
         task._process = proc
+        task._disk_output = disk_output  # type: ignore[attr-defined]
         registry.update(task_id)
 
-        # Fire-and-forget: collect output when process finishes
+        # Start stall watchdog to detect interactive prompts (e.g., apt/yum confirmation)
+        stall_callback = _create_stall_callback()
+        start_watchdog(task_id, output_path, stall_callback)
+
+        # Fire-and-forget: stream output to disk when process finishes
         async def _background_wait() -> None:
             try:
+                # Read output from subprocess
                 stdout_bytes, stderr_bytes = await proc.communicate()
                 exit_code = proc.returncode or 0
 
                 stdout = stdout_bytes.decode(errors="replace")
                 stderr = stderr_bytes.decode(errors="replace")
 
-                # Write output to file
-                try:
-                    Path(output_path).write_text(
-                        f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}\n\nEXIT CODE: {exit_code}",
-                        errors="replace",
-                    )
-                except Exception:
-                    logger.warning("Failed to write output for task %s", task_id)
+                # Append output to disk via DiskTaskOutput (queued write)
+                disk_output.append(f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}\n\nEXIT CODE: {exit_code}")
+                await disk_output.flush()
 
                 # Update task state
                 status = TaskStatus.COMPLETED if exit_code == 0 else TaskStatus.FAILED
@@ -330,6 +365,9 @@ class BashExecutor:
             except Exception as e:
                 logger.exception("Background task %s failed", task_id)
                 registry.update(task_id, status=TaskStatus.FAILED, result=str(e))
+            finally:
+                # Stop the stall watchdog when task completes
+                stop_watchdog(task_id)
 
         aio_task = asyncio.create_task(_background_wait())
         task._asyncio_task = aio_task

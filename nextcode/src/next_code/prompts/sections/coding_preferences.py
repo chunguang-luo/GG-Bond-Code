@@ -29,7 +29,9 @@ def get_content() -> str:
 
 - Prefer editing existing files over creating new ones, as this prevents file bloat and builds on existing work more effectively.
 
-- Do NOT create documentation files (*.md) or README files unless explicitly requested by the User."""
+- Do NOT create documentation files (*.md) or README files unless explicitly requested by the User.
+
+- After every code change, verify it works — run import checks, type checks, or actual tests. Never change code and move on without confirming it runs."""
 
 
 # Section function - returns content when called

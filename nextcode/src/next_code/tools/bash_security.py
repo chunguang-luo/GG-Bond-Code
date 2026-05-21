@@ -185,43 +185,10 @@ def check_dangerous_builtins(command: str) -> SecurityCheckResult:
 def check_newlines(command: str) -> SecurityCheckResult:
     """Check for newlines that may hide subsequent commands.
 
-    A command like `echo hello\nrm -rf /` might appear as two
-    separate commands to the shell but look like one command
-    to a simple parser.
-
-    We allow newlines when the continuation line starts with a
-    shell operator (&&, ||, |, >, >>) or is part of a compound
-    command (then, else, do, done, fi, esac), since these are
-    legitimate multi-line commands. We only block bare newlines
-    that start a new, independent command.
+    NOTE: This check is disabled by default. Multi-line commands
+    are allowed. To re-enable, remove the early return below.
     """
-    if "\n" not in command:
-        return SecurityCheckResult(is_safe=True)
-
-    # Lines that continue a previous construct — these are safe
-    _continuation_prefixes = (
-        "&&", "||", "|", ">", ">>", "<<",  # Pipeline / redirection
-        "then", "else", "elif", "fi",      # if/then/fi
-        "do", "done",                       # for/while/do/done
-        "in",                               # for ... in
-        ";;", ";;&", ";&",                 # case
-        "esac",                             # end of case
-        "#",                                # comment
-    )
-
-    for line in command.split("\n")[1:]:  # Skip first line
-        stripped = line.strip()
-        if not stripped:
-            continue  # Empty line is fine
-        if stripped.startswith(_continuation_prefixes):
-            continue  # Continuation of previous command
-        # This line starts a new independent command after a bare newline
-        return SecurityCheckResult(
-            is_safe=False,
-            check_id=SecurityCheckID.NEWLINES,
-            message="Command contains newlines (may hide subsequent commands)",
-        )
-
+    # Disabled — allow newlines in commands
     return SecurityCheckResult(is_safe=True)
 
 

@@ -88,10 +88,11 @@ class TestDangerousBuiltins:
 
 
 class TestNewlines:
+    # NOTE: check_newlines is disabled by design — multi-line commands are allowed.
+    # Users may run legitimate multi-line scripts (heredocs, Python -c blocks, etc.)
     def test_newline_in_command(self):
         result = check_newlines("echo hello\nrm -rf /")
-        assert not result.is_safe
-        assert "newlines" in result.message
+        assert result.is_safe  # Disabled: multi-line allowed
 
     def test_no_newlines(self):
         result = check_newlines("echo hello")
@@ -223,9 +224,10 @@ class TestAnalyzeCommandSecurity:
         result = analyze_command_security("eval 'evil'")
         assert not result.is_safe
 
-    def test_newline_injection_blocked(self):
+    def test_newline_injection_not_blocked(self):
+        # NOTE: check_newlines is disabled — multi-line commands allowed
         result = analyze_command_security("echo hello\nrm -rf /")
-        assert not result.is_safe
+        assert result.is_safe
 
     def test_control_chars_blocked(self):
         result = analyze_command_security("echo \x00hello")

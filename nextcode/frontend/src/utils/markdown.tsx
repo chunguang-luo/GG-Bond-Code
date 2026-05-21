@@ -43,6 +43,75 @@ marked.use(
   })
 );
 
+// Step 2: Override table renderer to use compact format instead of cli-table3
+// cli-table3 adds ASCII borders that are too wide for terminal output.
+// We use marked.use() with a custom renderer extension to replace the table method.
+marked.use({
+  renderer: {
+    table(token: any): string {
+      // Extract rows from the token's structure
+      const rows: string[][] = [];
+      for (const row of token.rows || []) {
+        const cells: string[] = [];
+        for (const cell of row) {
+          // cell.text may contain inline tokens; just use the text
+          cells.push((cell.text || cell.tokens?.[0]?.raw || "").toString().trim());
+        }
+        rows.push(cells);
+      }
+      // Header row
+      const headerCells: string[] = [];
+      for (const cell of token.header || []) {
+        headerCells.push((cell.text || cell.tokens?.[0]?.raw || "").toString().trim());
+      }
+
+      const colCount = headerCells.length || (rows[0]?.length || 0);
+
+      // Only use compact table if content is short
+      const allCellTexts = [...headerCells, ...rows.flat()];
+      const avgLen = allCellTexts.reduce((s, c) => s + c.length, 0) / Math.max(1, allCellTexts.length);
+
+      if (colCount === 2 && avgLen < 30) {
+        // Compact key: value format
+        const lines: string[] = [];
+        for (const row of rows) {
+          if (row.length >= 2) {
+            lines.push(`  ${chalk.bold(row[0])}: ${row[1]}`);
+          } else if (row.length === 1) {
+            lines.push(`  ${row[0]}`);
+          }
+        }
+        return lines.join("\n") + "\n";
+      }
+
+      // For wider/short tables: space-separated, no borders
+      if (colCount > 0 && avgLen < 40) {
+        const allRows = [headerCells, ...rows];
+        const widths: number[] = [];
+        for (let c = 0; c < colCount; c++) {
+          widths[c] = Math.min(30, Math.max(...allRows.map(r => (r[c] || "").length)));
+        }
+        const lines: string[] = [];
+        if (headerCells.length > 0) {
+          lines.push(chalk.dim(headerCells.map((c, i) => c.padEnd(widths[i])).join("  ").trimEnd()));
+          lines.push(chalk.dim("─".repeat(widths.reduce((a, b) => a + b, 0) + (colCount - 1) * 2)));
+        }
+        for (const row of rows) {
+          lines.push(row.map((c, i) => c.padEnd(widths[i] || 0)).join("  ").trimEnd());
+        }
+        return lines.join("\n") + "\n";
+      }
+
+      // Fallback: very long content → plain text rows
+      const lines: string[] = [];
+      for (const row of rows) {
+        lines.push(row.join(" | "));
+      }
+      return lines.join("\n") + "\n";
+    },
+  } as any,
+});
+
 // ── Sanitize incomplete streaming Markdown ────────────────────────────────
 
 /**
@@ -97,18 +166,23 @@ function closeUnclosedDelimiter(text: string, delimiterRe: string): string {
 
 interface MarkdownProps {
   children: string;
+  /** If true, trim trailing newlines from rendered output to avoid extra spacing. */
+  trim?: boolean;
 }
 
-export function Markdown({ children }: MarkdownProps) {
+export function Markdown({ children, trim }: MarkdownProps) {
   if (!children || !children.trim()) return null;
 
   const rendered = useMemo(() => {
     try {
-      return marked.parse(children) as string;
+      let result = marked.parse(children) as string;
+      // marked-terminal appends \n\n — strip trailing newlines when used inline
+      if (trim) result = result.replace(/\n+$/, "");
+      return result;
     } catch {
       return children;
     }
-  }, [children]);
+  }, [children, trim]);
 
   return <Text>{rendered}</Text>;
 }

@@ -64,6 +64,8 @@ export const CoreToInk = {
   TASK_COMPLETED: "task.completed",
   TASK_FAILED: "task.failed",
   TASK_COUNT: "task.count",
+  TASK_OUTPUT: "task.output",  // Real-time output streaming for running tasks
+  TASK_STALLED: "task.stalled",  // Task may be waiting for interactive input
 
   // Heartbeat
   PING: "ping",
@@ -84,6 +86,9 @@ export const InkToCore = {
   UI_RESIZE: "ui.resize",
   THEME_CHANGE: "theme.change",
   SHUTDOWN_ACK: "shutdown.ack",
+  // Task control — frontend tells backend to manage background tasks
+  TASK_STOP: "task.stop",    // Stop a running task
+  TASK_RETAIN: "task.retain", // Mark a task to stay visible
 } as const;
 
 export type InkToCoreType = (typeof InkToCore)[keyof typeof InkToCore];
@@ -175,6 +180,39 @@ export interface ReadyPayload {
     supportsSyncOutput: boolean;
     termProgram: string;
   };
+}
+
+// ── Task payloads ──────────────────────────────────────────────────────────────
+
+export interface TaskCountPayload {
+  bash: number;
+  agent: number;
+}
+
+export interface TaskStartedPayload {
+  task_id: string;
+  task_type: string;
+  description: string;
+}
+
+export interface TaskCompletedPayload {
+  task_id: string;
+  task_type: string;
+  status: string;
+  result: string;
+  description: string;
+}
+
+export interface TaskOutputPayload {
+  task_id: string;
+  output: string;
+  is_running: boolean;
+}
+
+export interface TaskStalledPayload {
+  task_id: string;
+  prompt_type: string;
+  message: string;
 }
 
 // ── Permission decision ────────────────────────────────────────────────────────

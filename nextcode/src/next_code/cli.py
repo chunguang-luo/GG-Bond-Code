@@ -11,7 +11,7 @@ def main() -> None:
     args = sys.argv[1:]
 
     # Fast-path: --version (zero-import return)
-    if len(args) == 1 and args[0] in ("--version", "-v", "-V"):
+    if len(args) == 1 and args[0] in ("--version", "-v"):
         print(f"{__version__} (NextCode)")
         return
 

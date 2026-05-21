@@ -39,13 +39,101 @@ class TaskRegistry:
 
     # ── Registration ──────────────────────────────────────────────
 
+    # Fields to preserve when re-registering an existing task (for resume scenarios)
+    _PRESERVE_FIELDS: tuple[str, ...] = (
+        "retain",       # User marked to stay visible
+        "started_at",   # Original start time (sorting stability)
+        "result",       # Previous result (if any)
+        "notified",     # Already notified (don't notify again)
+        "_output_path", # Output file path
+        "_disk_output", # DiskTaskOutput instance
+    )
+
     def register(self, task: TaskStateBase) -> None:
-        """Register a new task. Overwrites if same ID exists (for resume scenarios)."""
+        """Register a new task. Merges UI state for resume scenarios.
+
+        When a task is re-registered (e.g., after session restart), preserves
+        user-facing state like retain flag, started_at, result, and notified
+        status to maintain continuity.
+        """
+        import time as _time
+
         existing = self._tasks.get(task.id)
-        if existing and not existing.is_terminal():
-            logger.warning("Overwriting non-terminal task %s", task.id)
+        if existing:
+            # Merge UI state from existing task into the new registration
+            if existing.status == TaskStatus.RUNNING and task.status == TaskStatus.RUNNING:
+                # Task is still running — merge state but keep it running
+                logger.debug(
+                    "Re-registering running task %s, preserving UI state",
+                    task.id,
+                )
+            else:
+                logger.debug(
+                    "Task %s already exists (status=%s), merging UI state",
+                    task.id, existing.status.value,
+                )
+
+            for field_name in self._PRESERVE_FIELDS:
+                if not hasattr(existing, field_name):
+                    continue
+                old_value = getattr(existing, field_name)
+                # For retain: preserve old value if new task has default (False)
+                # This allows user-marked retain to survive re-registration
+                if field_name == "retain" and not task.retain and old_value:
+                    setattr(task, field_name, old_value)
+                elif field_name != "retain":
+                    # For other fields, always preserve from old task
+                    setattr(task, field_name, old_value)
+
+            # If existing task was terminal and notified, carry that forward
+            if existing.is_terminal() and existing.notified:
+                task.notified = True
+                task._completed_at = existing._completed_at
+
+            # Set evict_after for retained tasks (30 seconds from now)
+            if task.retain:
+                task.evict_after = _time.monotonic() + self.EVICTION_GRACE_PERIOD
+                logger.debug("Task %s marked for retention until %f", task.id, task.evict_after)
+
         self._tasks[task.id] = task
-        logger.info("Task registered: %s (type=%s)", task.id, task.type.value)
+        logger.info("Task registered: %s (type=%s, retain=%s)", task.id, task.type.value, task.retain)
+
+    def mark_retain(self, task_id: str, retain: bool = True) -> bool:
+        """Mark a task to be retained in the UI (don't auto-evict).
+
+        Args:
+            task_id: The task ID to mark
+            retain: True to retain, False to unmark
+
+        Returns True if the task was found and marked.
+        """
+        import time as _time
+
+        task = self._tasks.get(task_id)
+        if task is None:
+            return False
+
+        task.retain = retain
+        if retain:
+            task.evict_after = _time.monotonic() + self.EVICTION_GRACE_PERIOD
+            logger.debug("Task %s marked for retention", task_id)
+        else:
+            task.evict_after = 0.0
+            logger.debug("Task %s unmark retention", task_id)
+
+        return True
+
+    def mark_disk_loaded(self, task_id: str) -> bool:
+        """Mark a task's output as loaded from disk.
+
+        Used to prevent redundant disk reads when the UI has already
+        loaded the task's output.
+        """
+        task = self._tasks.get(task_id)
+        if task is None:
+            return False
+        task.disk_loaded = True
+        return True
 
     def register_kill_handler(self, task_type: TaskType, handler: KillHandler) -> None:
         """Register a kill handler for a task type.
@@ -184,16 +272,33 @@ class TaskRegistry:
 
         Tasks are kept for EVICTION_GRACE_PERIOD after being notified,
         so that TaskOutput can still retrieve their results.
+        Tasks with retain=True are kept until their evict_after timestamp.
         """
         import time
         now = time.monotonic()
-        to_evict = [
-            tid for tid, task in self._tasks.items()
-            if task.is_terminal() and task.notified
-            and task._completed_at > 0
-            and (now - task._completed_at) > self.EVICTION_GRACE_PERIOD
-        ]
+        to_evict = []
+
+        for tid, task in self._tasks.items():
+            # Must be terminal and notified
+            if not (task.is_terminal() and task.notified):
+                continue
+
+            # Check grace period from completion
+            if task._completed_at > 0 and (now - task._completed_at) <= self.EVICTION_GRACE_PERIOD:
+                continue
+
+            # Check retain deadline
+            if task.retain and task.evict_after > 0 and now < task.evict_after:
+                continue  # Still within retention period
+
+            to_evict.append(tid)
+
         for tid in to_evict:
+            task = self._tasks[tid]
+            logger.debug(
+                "Evicting task %s (retain=%s, completed_at=%f, evict_after=%f, now=%f)",
+                tid, task.retain, task._completed_at, task.evict_after, now,
+            )
             del self._tasks[tid]
 
     def clear(self) -> None:

@@ -11,6 +11,15 @@ Architecture (mirrors Claude Code's three-layer design):
 
 from .types import TaskType, TaskStatus, TaskStateBase, generate_task_id
 from .registry import TaskRegistry, get_task_registry
+from .disk_output import DiskTaskOutput
+from .output_poller import TaskOutputPoller, start_polling, stop_polling, poll_once
+from .stall_watchdog import (
+    StallWatchdog,
+    start_watchdog,
+    stop_watchdog,
+    record_task_output,
+    clear_watchdogs,
+)
 
 __all__ = [
     "TaskType",
@@ -19,4 +28,14 @@ __all__ = [
     "generate_task_id",
     "TaskRegistry",
     "get_task_registry",
+    "DiskTaskOutput",
+    "TaskOutputPoller",
+    "start_polling",
+    "stop_polling",
+    "poll_once",
+    "StallWatchdog",
+    "start_watchdog",
+    "stop_watchdog",
+    "record_task_output",
+    "clear_watchdogs",
 ]

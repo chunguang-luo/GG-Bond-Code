@@ -11,7 +11,7 @@ from .init import init
 
 
 @click.group(invoke_without_command=True)
-@click.option("--version", "-v", is_flag=True, help="Show version.")
+@click.option("--version", "-V", is_flag=True, help="Show version.")
 @click.option("--print", "print_mode", is_flag=True, help="Non-interactive mode (read from stdin).")
 @click.option("--model", default=None, help="Model to use.")
 @click.option("--cwd", default=None, help="Working directory.")

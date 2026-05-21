@@ -76,11 +76,23 @@ class TaskStateBase:
     agent_id: str | None = None  # Which agent created this task
     notified: bool = False  # Prevents duplicate completion notifications
 
+    # UI retention state — for preserving user-facing state across re-registration
+    # (e.g., when resuming a background agent after session restart)
+    retain: bool = False  # User marked this task to stay visible (don't auto-evict)
+    evict_after: float = 0.0  # monotonic timestamp when task can be evicted (0 = never)
+    disk_loaded: bool = False  # Task output has been loaded from disk
+
     # Process/subprocess handles — set by the specific task implementation
     _process: Any = None  # asyncio.subprocess.Process for bash tasks
     _asyncio_task: Any = None  # asyncio.Task for agent tasks
+    _disk_output: Any = None  # DiskTaskOutput instance for bash tasks
     _output_path: str | None = None  # Path to output file for bash tasks
     _completed_at: float = 0.0  # monotonic timestamp when task reached terminal state
 
     def is_terminal(self) -> bool:
         return is_terminal_status(self.status)
+
+    @property
+    def asyncio_task(self) -> Any | None:
+        """Public accessor for the asyncio task (agent tasks)."""
+        return self._asyncio_task

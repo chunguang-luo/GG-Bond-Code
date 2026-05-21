@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,30 @@ class FileWriteTool(Tool):
                 return ToolResult(output=f"Write blocked: {reason}", error=True)
 
         try:
+            # Compute diff if file exists
+            metadata: dict[str, Any] = {}
+            if file_path.exists():
+                old_content = file_path.read_text()
+                old_lines = old_content.splitlines(keepends=True)
+                new_lines = content.splitlines(keepends=True)
+                diff = difflib.unified_diff(
+                    old_lines, new_lines,
+                    fromfile="", tofile="",
+                    n=1,
+                )
+                diff_lines = list(diff)
+                added = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++"))
+                removed = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("---"))
+                # Remove --- and +++ header lines (file path is already in tool label)
+                diff_lines = [l for l in diff_lines if not l.startswith("---") and not l.startswith("+++")]
+                if len(diff_lines) > 15:
+                    diff_lines = diff_lines[:15]
+                metadata = {"added": added, "removed": removed, "diff": "\n".join(diff_lines)}
+            else:
+                # New file — count all lines as added
+                new_lines = content.splitlines(keepends=True)
+                metadata = {"added": len(new_lines), "removed": 0, "diff": ""}
+
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content)
 
@@ -49,6 +74,6 @@ class FileWriteTool(Tool):
                 except Exception:
                     pass  # Cache update is best-effort
 
-            return ToolResult(output=f"Wrote {len(content)} bytes to {file_path}")
+            return ToolResult(output="Written", metadata=metadata)
         except Exception as e:
             return ToolResult(output=str(e), error=True)

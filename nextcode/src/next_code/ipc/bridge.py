@@ -90,6 +90,11 @@ class IPCBridge:
         # Register task poller to send IPC events for frontend UI
         self._register_task_poller()
 
+        # Register this bridge's stall handler as the global callback
+        # Use late binding to avoid circular import — the function is defined
+        # later in this same file, but by the time __init__ runs it's available.
+        set_stall_notification_callback(self._handle_stall)
+
         # Register message handler
         self.transport.on_message(self._handle_message)
 
@@ -118,6 +123,13 @@ class IPCBridge:
                 logger.info("IPC: Ink frontend ready: %s", msg.payload)
             elif msg.type == InkToCore.SHUTDOWN_ACK:
                 logger.info("IPC: Ink acknowledged shutdown")
+            elif msg.type == InkToCore.TASK_STOP:
+                task_id = msg.payload.get("task_id", "")
+                await self._handle_task_stop(task_id)
+            elif msg.type == InkToCore.TASK_RETAIN:
+                task_id = msg.payload.get("task_id", "")
+                retain = msg.payload.get("retain", False)
+                await self._handle_task_retain(task_id, retain)
             else:
                 logger.warning("IPC: unknown message type: %s", msg.type)
         except Exception:
@@ -306,6 +318,7 @@ class IPCBridge:
                 "toolResult": event.tool_result,
                 "toolError": event.tool_error,
                 "elapsedMs": round(elapsed_ms),
+                "toolMetadata": event.metadata,
             }
 
         elif event.type == "error":
@@ -445,9 +458,9 @@ class IPCBridge:
             "params": params,
         })
 
-        # Wait for response with timeout
+        # Wait for response with timeout (3 minutes for slow operations)
         try:
-            return await asyncio.wait_for(future, timeout=30.0)
+            return await asyncio.wait_for(future, timeout=180.0)
         except asyncio.TimeoutError:
             logger.warning("IPC: permission request %s timed out", request_id)
             return PermissionDecision.DENY
@@ -561,24 +574,35 @@ class IPCBridge:
 
         Sends TASK_STARTED / TASK_COMPLETED / TASK_FAILED events and task count
         updates so the frontend can display background task notifications.
+        Also streams real-time output for running tasks via TASK_OUTPUT events.
+
         The model-side waiting is handled by QueryRunner._await_background_tasks().
         """
         from ..tasks.registry import get_task_registry
         from ..tasks.types import TaskStatus, TaskType
+        from ..tasks.disk_output import DiskTaskOutput
 
         seen_task_ids: set[str] = set()
+        task_output_cache: dict[str, str] = {}  # task_id -> last output for change detection
 
         async def _poll_tasks() -> None:
             while True:
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(0.5)  # Poll every 500ms for output updates
                 try:
                     registry = get_task_registry()
-                    # Send running task count
-                    bash_count, agent_count = registry.running_count()
-                    await self.transport.send_event(
-                        CoreToInk.TASK_COUNT.value,
-                        {"bash": bash_count, "agent": agent_count},
-                    )
+
+                    # Send running task count (every 2s, not every 500ms)
+                    if not hasattr(_poll_tasks, "_last_count_update"):
+                        _poll_tasks._last_count_update = 0.0
+                    now = time.monotonic()
+                    if now - _poll_tasks._last_count_update > 2.0:
+                        bash_count, agent_count = registry.running_count()
+                        await self.transport.send_event(
+                            CoreToInk.TASK_COUNT.value,
+                            {"bash": bash_count, "agent": agent_count},
+                        )
+                        _poll_tasks._last_count_update = now
+
                     # Announce newly started tasks
                     for task in registry.list_all():
                         if task.id not in seen_task_ids:
@@ -593,6 +617,31 @@ class IPCBridge:
                                         "description": desc,
                                     },
                                 )
+
+                    # Stream output for running tasks
+                    for task in registry.list_all():
+                        if task.status != TaskStatus.RUNNING:
+                            continue
+                        if not task._output_path:
+                            continue
+
+                        # Read tail from disk
+                        disk_output = DiskTaskOutput(task._output_path)
+                        tail = disk_output.read_tail(lines=30)
+
+                        # Only send if output changed
+                        last_output = task_output_cache.get(task.id, "")
+                        if tail != last_output:
+                            task_output_cache[task.id] = tail
+                            await self.transport.send_event(
+                                CoreToInk.TASK_OUTPUT.value,
+                                {
+                                    "task_id": task.id,
+                                    "output": tail,
+                                    "is_running": True,
+                                },
+                            )
+
                     # Announce newly completed tasks
                     for task in registry.list_all():
                         if task.is_terminal() and not task.notified:
@@ -602,8 +651,17 @@ class IPCBridge:
                                     if task.status == TaskStatus.COMPLETED
                                     else CoreToInk.TASK_FAILED.value
                                 )
-                                result_preview = (task.result or "")[:2000]
+                                # Send final output
+                                final_output = ""
+                                if task._output_path:
+                                    disk_output = DiskTaskOutput(task._output_path)
+                                    final_output = disk_output.read_all()
+                                result_preview = final_output or (task.result or "")[:2000]
                                 desc = task.description or task.command[:50]
+
+                                # Clear output cache
+                                task_output_cache.pop(task.id, None)
+
                                 await self.transport.send_event(event_type, {
                                     "task_id": task.id,
                                     "task_type": task.type.value,
@@ -611,9 +669,99 @@ class IPCBridge:
                                     "result": result_preview,
                                     "description": desc,
                                 })
+
                     # Evict old terminal tasks
                     registry.evict_terminal()
+
                 except Exception:
                     logger.exception("Task poll error")
 
         asyncio.create_task(_poll_tasks())
+
+    # ── Stall watchdog callback ───────────────────────────────────────────────
+
+    async def _handle_stall(self, task_id: str, prompt_type: str) -> None:
+        """Handle stall detection — send notification to frontend.
+
+        When a background task has been silent for 45+ seconds and the
+        last output line matches a known interactive prompt pattern
+        (e.g., apt confirmation, sudo password), this notifies the model
+        so it can decide whether to kill the task or send input.
+        """
+        logger.info("Stall detected for task %s: %s", task_id, prompt_type)
+
+        await self.transport.send_event(
+            CoreToInk.TASK_STALLED.value,
+            {
+                "task_id": task_id,
+                "prompt_type": prompt_type,
+                "message": f"Task {task_id} may be waiting for user input: {prompt_type}",
+            },
+        )
+
+    # ── Task control handlers ────────────────────────────────────────────────
+
+    async def _handle_task_stop(self, task_id: str) -> None:
+        """Handle TASK_STOP from frontend — stop a running task."""
+        from ..tasks.registry import get_task_registry
+        from ..tasks.stall_watchdog import stop_watchdog
+
+        registry = get_task_registry()
+        task = registry.get(task_id)
+        if task is None:
+            logger.warning("IPC: TASK_STOP for unknown task %s", task_id)
+            return
+
+        logger.info("IPC: Stopping task %s", task_id)
+
+        # Stop the stall watchdog
+        stop_watchdog(task_id)
+
+        # Kill the subprocess if running
+        if task._process is not None:
+            try:
+                task._process.terminate()
+                # Give it a moment to gracefully terminate
+                try:
+                    await asyncio.wait_for(task._process.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    # Force kill if it doesn't terminate gracefully
+                    task._process.kill()
+            except Exception:
+                pass
+
+        # Cancel the asyncio task if running
+        if task._asyncio_task is not None and not task._asyncio_task.done():
+            task._asyncio_task.cancel()
+
+        # Update task status
+        registry.update(task_id, status="killed", result="Stopped by user")
+
+    async def _handle_task_retain(self, task_id: str, retain: bool) -> None:
+        """Handle TASK_RETAIN from frontend — mark a task to stay visible."""
+        from ..tasks.registry import get_task_registry
+
+        registry = get_task_registry()
+        success = registry.mark_retain(task_id, retain)
+        if success:
+            logger.info("IPC: Task %s retain=%s", task_id, retain)
+        else:
+            logger.warning("IPC: TASK_RETAIN for unknown task %s", task_id)
+
+
+# ── Global stall callback registry ───────────────────────────────────────────
+
+
+# Global reference to the current bridge's stall handler
+_global_stall_callback: callable | None = None
+
+
+def get_stall_notification_callback() -> callable | None:
+    """Get the global stall notification callback."""
+    return _global_stall_callback
+
+
+def set_stall_notification_callback(callback: callable | None) -> None:
+    """Set the global stall notification callback (called by IPCBridge.__init__)."""
+    global _global_stall_callback
+    _global_stall_callback = callback

@@ -2,10 +2,40 @@
 
 from __future__ import annotations
 
+import difflib
 from pathlib import Path
 from typing import Any
 
 from .base import Tool, ToolResult
+
+
+def _compute_diff(
+    old_lines: list[str], new_lines: list[str], filepath: str, n: int = 1,
+) -> tuple[int, int, str]:
+    """Compute unified diff and stats.
+
+    Returns:
+        (added, removed, diff_text) where diff_text is a unified diff snippet.
+    """
+    diff = difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile="", tofile="",
+        n=n,
+    )
+    diff_lines = list(diff)
+
+    # Count added/removed (skip +++ and --- headers)
+    added = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++"))
+    removed = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("---"))
+
+    # Remove --- and +++ header lines (file path is already in tool label)
+    diff_lines = [l for l in diff_lines if not l.startswith("---") and not l.startswith("+++")]
+
+    # Trim diff: max ~10 lines to keep compact
+    if len(diff_lines) > 10:
+        diff_lines = diff_lines[:10]
+
+    return added, removed, "\n".join(diff_lines)
 
 
 class FileEditTool(Tool):
@@ -68,6 +98,11 @@ class FileEditTool(Tool):
         else:
             new_content = content.replace(old_string, new_string, 1)
 
+        # Compute diff before writing
+        old_lines = content.splitlines(keepends=True)
+        new_lines = new_content.splitlines(keepends=True)
+        added, removed, diff_text = _compute_diff(old_lines, new_lines, str(file_path))
+
         file_path.write_text(new_content)
 
         # Update file cache after successful edit
@@ -77,4 +112,7 @@ class FileEditTool(Tool):
             except Exception:
                 pass  # Cache update is best-effort
 
-        return ToolResult(output=f"Edited {file_path}")
+        return ToolResult(
+            output="Edited",
+            metadata={"added": added, "removed": removed, "diff": diff_text},
+        )

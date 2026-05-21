@@ -40,9 +40,10 @@ def test_wildcard_session_grant():
     """Wildcard grant allows all operations for a tool."""
     with patch("next_code.permissions.manager.get_setting", return_value=[]):
         pm = PermissionManager()
-        pm.grant_session("Bash", {}, wildcard=True)
-        assert pm.check("Bash", {"command": "ls -la"}) == PermissionDecision.ALLOW
-        assert pm.check("Bash", {"command": "rm -rf /"}) == PermissionDecision.ALLOW
+        # Edit wildcard persists Edit:* to settings and matches all files
+        pm.grant_session("Edit", {}, wildcard=True)
+        assert pm.check("Edit", {"file_path": "/tmp/test.py"}) == PermissionDecision.ALLOW
+        assert pm.check("Edit", {"file_path": "/home/user/secret.py"}) == PermissionDecision.ALLOW
 
 
 def test_specific_session_grant():
@@ -59,6 +60,8 @@ def test_deny_list_priority():
     with patch("next_code.permissions.manager.get_setting", return_value=[]):
         pm = PermissionManager()
         pm._denied = ["Bash:*"]
+        # Bash wildcard grant produces a session-only grant (no command param)
+        # but deny list still takes priority
         pm.grant_session("Bash", {}, wildcard=True)
         assert pm.check("Bash", {"command": "ls"}) == PermissionDecision.DENY
 
@@ -75,27 +78,28 @@ def test_wildcard_grant_persists_to_settings():
     with patch("next_code.permissions.manager.update_setting") as mock_update:
         with patch("next_code.permissions.manager.get_setting", return_value=[]):
             pm = PermissionManager()
-            pm.grant_session("Bash", {}, wildcard=True)
+            # Edit wildcard with no params persists Edit:* to settings
+            pm.grant_session("Edit", {}, wildcard=True)
 
-            # update_setting should be called with the allow list containing "Bash:*"
-            mock_update.assert_called_once_with("permissions.allow", ["Bash:*"])
+            # update_setting should be called with the allow list containing "Edit:*"
+            mock_update.assert_called_once_with("permissions.allow", ["Edit:*"])
 
             # In-memory list also updated
-            assert "Bash:*" in pm._allowed
+            assert "Edit:*" in pm._allowed
 
 
 def test_wildcard_grant_no_duplicate():
     """Persisting the same pattern twice doesn't create duplicates."""
     with patch("next_code.permissions.manager.update_setting") as mock_update:
-        with patch("next_code.permissions.manager.get_setting", return_value=["Bash:*"]):
+        with patch("next_code.permissions.manager.get_setting", return_value=["Edit:*"]):
             pm = PermissionManager()
-            pm.grant_session("Bash", {}, wildcard=True)
+            pm.grant_session("Edit", {}, wildcard=True)
 
-            # Should NOT call update_setting since "Bash:*" already exists
+            # Should NOT call update_setting since "Edit:*" already exists
             mock_update.assert_not_called()
 
             # In-memory list should not duplicate
-            assert pm._allowed.count("Bash:*") == 1
+            assert pm._allowed.count("Edit:*") == 1
 
 
 def test_specific_grant_does_not_persist():

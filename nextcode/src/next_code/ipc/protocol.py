@@ -74,6 +74,8 @@ class CoreToInk(str, Enum):
     TASK_COMPLETED = "task.completed"
     TASK_FAILED = "task.failed"
     TASK_COUNT = "task.count"  # Periodic background task count update
+    TASK_OUTPUT = "task.output"  # Real-time output streaming (tail) for running tasks
+    TASK_STALLED = "task.stalled"  # Task may be waiting for interactive input (e.g., apt confirmation)
 
     # Heartbeat
     PING = "ping"
@@ -103,6 +105,10 @@ class InkToCore(str, Enum):
 
     # Shutdown
     SHUTDOWN_ACK = "shutdown.ack"
+
+    # Task control — frontend tells backend to manage background tasks
+    TASK_STOP = "task.stop"  # Stop a running task
+    TASK_RETAIN = "task.retain"  # Mark a task to stay visible
 
 
 # Union type for all message types

@@ -8,6 +8,7 @@ from typing import Any
 from .base import Tool, ToolResult
 from ..tasks.registry import get_task_registry
 from ..tasks.types import TaskStatus
+from ..tasks.disk_output import DiskTaskOutput
 
 
 class TaskOutputTool(Tool):
@@ -16,6 +17,7 @@ class TaskOutputTool(Tool):
         "获取后台任务的输出结果。"
         "重要：后台任务启动后不要立即调用此工具！"
         "任务完成时会自动通知，到时再用此工具获取结果。"
+        "使用 tail_lines 参数可以获取运行中任务的最新输出。"
     )
 
     def get_schema(self) -> dict[str, Any]:
@@ -35,6 +37,11 @@ class TaskOutputTool(Tool):
                     "type": "integer",
                     "default": 300000,
                     "description": "等待超时时间（毫秒，默认 300000，即 5 分钟）",
+                },
+                "tail_lines": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "只返回最后 N 行（0=返回全部），用于轮询运行中任务的最新输出",
                 },
             },
             "required": ["task_id"],
@@ -83,29 +90,32 @@ class TaskOutputTool(Tool):
                 return ToolResult(output=f"任务 {task_id} 等待超时，仍在运行中 ({mins}m {secs}s)")
 
         # Task is terminal — gather output
+        tail_lines = params.get("tail_lines", 0)
+        return self._read_task_output(task, task_id, tail_lines=tail_lines)
+
+    def _read_task_output(self, task: Any, task_id: str, tail_lines: int = 0) -> ToolResult:
+        """Read task output from disk, with optional tail mode."""
         output_parts: list[str] = []
 
-        # For bash tasks, read the full output file
+        # For bash tasks, use DiskTaskOutput for efficient tail reading
         if task._output_path:
-            try:
-                content = Path(task._output_path).read_text(errors="replace")
-                if content.strip():
-                    output_parts.append(content)
-            except FileNotFoundError:
-                # Output file cleaned up — fall back to result
-                if task.result:
-                    output_parts.append(task.result)
-            except Exception as e:
-                output_parts.append(f"(读取输出文件失败: {e})")
-                if task.result:
-                    output_parts.append(task.result)
+            disk_output = DiskTaskOutput(task._output_path)
+            if tail_lines > 0:
+                content = disk_output.read_tail(lines=tail_lines)
+            else:
+                content = disk_output.read_all()
+
+            if content.strip():
+                output_parts.append(content)
+            elif task.result:
+                output_parts.append(task.result)
         elif task.result:
             # Agent task — result contains full text
             output_parts.append(task.result)
 
         output = "\n".join(output_parts)
         if not output.strip():
-            return ToolResult(output=f"任务 {task_id} 无输出")
+            return ToolResult(output="无输出")
 
         return ToolResult(output=output)
 

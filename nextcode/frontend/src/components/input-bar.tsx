@@ -198,13 +198,13 @@ export function InputBar({
         </Box>
       )}
       {/* Input line */}
-      <Box borderStyle="single" borderColor={isQueryRunning ? "yellow" : "green"} paddingLeft={1} paddingRight={1}>
-        <Text color="green" bold>
+      <Box borderStyle="single" borderColor={isQueryRunning ? "yellow" : "gray"} paddingLeft={1} paddingRight={1}>
+        <Text color="gray" bold>
           {"nextcode "}
         </Text>
         <Text color="gray">{"❯ "}</Text>
         <Text>{leftOfCursor}</Text>
-        {!disabled && <Text color={isQueryRunning ? "yellow" : "green"} inverse>{rightOfCursor.length > 0 ? rightOfCursor[0] : " "}</Text>}
+        {!disabled && <Text color={isQueryRunning ? "yellow" : "gray"} inverse>{rightOfCursor.length > 0 ? rightOfCursor[0] : " "}</Text>}
         <Text>{rightOfCursor.length > 0 ? rightOfCursor.slice(1) : ""}</Text>
         {disabled && <Text dimColor>{" waiting for permission..."}</Text>}
         {isQueryRunning && !disabled && value.length === 0 && <Text dimColor color="yellow">{" type to queue a task..."}</Text>}
