@@ -5,7 +5,7 @@
  */
 
 import React from "react";
-import { Box, Text, useStdout, Static } from "ink";
+import { Box, Text, useStdout } from "ink";
 import { Markdown, StreamingMarkdown } from "../utils/markdown";
 
 export interface DisplayMessage {
@@ -311,21 +311,56 @@ function DiffLines({ diff, columns }: { diff: string; columns: number }) {
   return <Box marginLeft={MARGIN_LEFT} flexDirection="column">{rendered}</Box>;
 }
 
-/** Agent start message — static display (no live timer).
- *  Since messages are rendered inside <Static>, they must not change after
- *  initial render. The agent_start message shows only the type and prompt.
- *  Final status (Done + elapsed + tool count) is shown by the agent_result message. */
+/** Hook that returns elapsed seconds since startMs, updating every second. */
+function useAgentElapsed(startMs: number | null): number {
+  const [elapsed, setElapsed] = React.useState(0);
+  React.useEffect(() => {
+    if (startMs === null) {
+      setElapsed(0);
+      return;
+    }
+    const update = () => setElapsed(Date.now() - startMs!);
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [startMs]);
+  return elapsed;
+}
+
+/** Agent start message with live elapsed timer, updates to Done on completion. */
 function AgentStartItem({ msg }: { msg: DisplayMessage }) {
   const agentMeta = msg.metadata as {
     agent_type?: string; description?: string; prompt?: string;
+    _startMs?: number; _tool_use_count?: number;
+    _done?: boolean; _finalElapsed?: string;
   } | undefined;
   const rawType = agentMeta?.agent_type || "Agent";
   const agentType = rawType === "general-purpose" ? rawType : `${rawType} Agent`;
   const agentPrompt = agentMeta?.prompt || "";
+  const startMs = agentMeta?._startMs || null;
+  const toolCount = agentMeta?._tool_use_count || 0;
+  const isDone = agentMeta?._done || false;
+  const finalElapsed = agentMeta?._finalElapsed || "";
+  const elapsedMs = useAgentElapsed(isDone ? null : startMs);
   return (
     <Box marginTop={1} marginLeft={2} flexDirection="column">
       <Box>
         <Text color="magenta" bold>{`⏎ ${agentType}`}</Text>
+        {isDone && finalElapsed && <Text dimColor>{` (${finalElapsed})`}</Text>}
+        {!isDone && elapsedMs > 0 && <Text dimColor>{` (${formatMs(elapsedMs)})`}</Text>}
+      </Box>
+      <Box marginLeft={2}>
+        {isDone ? (
+          <>
+            <Text dimColor>⎿  Done</Text>
+            <Text dimColor>{` · ${toolCount} tools used`}</Text>
+          </>
+        ) : (
+          <>
+            <Text dimColor>⎿  Running</Text>
+            <Text dimColor>{` · ${toolCount} tools used`}</Text>
+          </>
+        )}
       </Box>
       {agentPrompt && (
         <Box marginLeft={4}>
@@ -579,15 +614,11 @@ export const MessageList = React.memo(function MessageList({ messages, currentTe
   const columns = stdout?.columns || 120;
   return (
     <Box flexDirection="column" flexGrow={1} overflowY="hidden">
-      {/* Completed messages rendered via <Static> — written once, never erased.
-          This prevents Ink's erase-and-redraw cycle from scrolling the terminal
-          back to the bottom when the user is reading earlier messages. */}
-      <Static items={messages}>
-        {(msg, idx) => (
-          <MessageItem key={`${msg.type}-${idx}`} msg={msg} columns={columns} />
-        )}
-      </Static>
-      {/* Streaming text stays in the dynamic area — erased and redrawn each tick */}
+      {messages.map((msg, idx) => (
+        // Use index-based key to avoid duplicate IDs between tool_use and tool_result
+        <MessageItem key={`${msg.type}-${idx}`} msg={msg} columns={columns} />
+      ))}
+      {/* Streaming text: gray ⏺ prefix while still generating */}
       {currentText && (
         <Box marginTop={1} flexDirection="row">
           <Text dimColor>{"⏺ "}</Text>

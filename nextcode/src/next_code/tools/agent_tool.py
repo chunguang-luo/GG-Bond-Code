@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any
+from collections import defaultdict
 
 from .base import Tool, ToolResult
 from ..agents.definition import AgentDefinition
@@ -29,6 +31,45 @@ from ..tasks.types import TaskStateBase, TaskType, TaskStatus, generate_task_id
 from ..tasks.registry import get_task_registry
 
 logger = logging.getLogger(__name__)
+
+# 用于去重：记录正在运行的 agent 任务
+_running_agents: dict[str, list[tuple[str, asyncio.Task]]] = defaultdict(list)
+
+# 相似度阈值：低于此值视为相似任务
+_SIMILARITY_THRESHOLD = 0.6
+
+
+def _compute_prompt_signature(prompt: str) -> tuple[str, set[str]]:
+    """计算 prompt 的签名用于相似度检测。
+
+    Returns:
+        (规范化文本, 关键词集合)
+    """
+    # 规范化：转小写，移除多余空白
+    normalized = re.sub(r"\s+", " ", prompt.lower()).strip()
+    # 提取关键词：字母数字组合
+    words = set(re.findall(r"\b[a-z0-9]{3,}\b", normalized))
+    return normalized, words
+
+
+def _is_similar_prompt(p1: str, p2: str) -> bool:
+    """检测两个 prompt 是否相似（基于关键词重叠度）。
+
+    Returns:
+        True 如果相似度 >= SIMILARITY_THRESHOLD
+    """
+    _, words1 = _compute_prompt_signature(p1)
+    _, words2 = _compute_prompt_signature(p2)
+
+    if not words1 or not words2:
+        return p1.lower().strip() == p2.lower().strip()
+
+    # Jaccard 相似度
+    intersection = len(words1 & words2)
+    union = len(words1 | words2)
+    if union == 0:
+        return False
+    return intersection / union >= _SIMILARITY_THRESHOLD
 
 
 class AgentTool(Tool):
@@ -98,6 +139,18 @@ class AgentTool(Tool):
                 error=True,
             )
 
+        # ── 相似任务检测 ──────────────────────────────────────────
+        if prompt.strip() and subagent_type in _running_agents:
+            for existing_prompt, _ in _running_agents[subagent_type]:
+                if _is_similar_prompt(prompt, existing_prompt):
+                    return ToolResult(
+                        output=f"检测到相似的 {subagent_type} 任务已在运行：\n"
+                               f"  进行中: {existing_prompt[:100]}...\n"
+                               f"  新请求: {prompt[:100]}...\n"
+                               f"请等待当前任务完成或更改任务描述。",
+                        error=True,
+                    )
+
         # 1. 查找 Agent 定义
         cwd = ctx.get_state("cwd") or "."
         agents = get_active_agents(cwd)
@@ -121,6 +174,11 @@ class AgentTool(Tool):
         tool_use_count = 0
         agent_id = None
         _FG_TIMEOUT = 600  # seconds
+
+        # 注册到运行中列表
+        running_key = (subagent_type, prompt)
+        _running_agents[subagent_type].append(running_key)
+
         try:
             agent_gen = run_agent(
                 agent_def=agent_def,
@@ -173,6 +231,10 @@ class AgentTool(Tool):
                     return ToolResult(output=event.content, error=True)
         except Exception as e:
             return ToolResult(output=f"Agent 执行失败: {e}", error=True)
+        finally:
+            # 从运行中列表移除
+            if running_key in _running_agents.get(subagent_type, []):
+                _running_agents[subagent_type].remove(running_key)
 
         # 3. 提取最终结果 — 返回完整输出给主流程 Agent 使用
         # 前端已通过 emit_ipc 实时显示了子 Agent 的输出
@@ -275,10 +337,18 @@ class AgentTool(Tool):
 
             result = "".join(text_parts).strip() or "Agent completed with no output"
             registry.update(task_id, status=TaskStatus.COMPLETED, result=result)
+            # 从运行中列表移除
+            for key in list(_running_agents.get(agent_def.agent_type, [])):
+                if key[0] == prompt:
+                    _running_agents[agent_def.agent_type].remove(key)
+                    break
 
         aio_task = asyncio.create_task(_run_and_complete())
         task._asyncio_task = aio_task
         registry.update(task_id)
+
+        # 注册到运行中列表
+        _running_agents[agent_def.agent_type].append((prompt, aio_task))
 
         return ToolResult(
             output=f"后台 Agent 已启动 (task_id: {task_id})\n"
@@ -286,13 +356,12 @@ class AgentTool(Tool):
         )
 
     def is_concurrency_safe(self, params: dict[str, Any]) -> bool:
-        """Allow multiple Agent calls to run concurrently.
+        """不允许并发执行 Agent 工具。
 
-        Multiple sub-agents can safely run in parallel since each gets its
-        own isolated context (create_subagent_context). The nesting depth
-        limit (2 levels) is enforced inside execute() via agent_depth.
+        多个 Agent 并发会导致相同任务重复执行，造成资源浪费。
+        通过 _is_similar_prompt 检测相似任务进行去重。
         """
-        return True
+        return False
 
     def get_timeout(self) -> float:
         """Agent tool needs more time — sub-agents may run multiple tool calls."""

@@ -14,6 +14,12 @@ interface InputState {
   cursor: number;
 }
 
+interface ContextBarInfo {
+  tokenUsage: number;
+  effectiveWindow: number;
+  warningState: string;
+}
+
 interface InputBarProps {
   inputState: InputState;
   setInputState: (value: InputState | ((prev: InputState) => InputState)) => void;
@@ -22,7 +28,7 @@ interface InputBarProps {
   isQueryRunning?: boolean;
   model?: string;
   commands?: CommandInfo[];
-  columns?: number;
+  contextInfo?: ContextBarInfo | null;
 }
 
 export function InputBar({
@@ -33,7 +39,7 @@ export function InputBar({
   isQueryRunning,
   model,
   commands = [],
-  columns,
+  contextInfo,
 }: InputBarProps) {
   // Build a flat list of all command names + aliases for Tab completion
   const allCommandNames = useMemo(() => {
@@ -172,7 +178,7 @@ export function InputBar({
   const rightOfCursor = value.slice(cursor);
 
   return (
-    <Box flexDirection="column" width={columns}>
+    <Box flexDirection="column">
       {/* Command suggestions */}
       {matchingCommands.length > 0 && (
         <Box flexDirection="column" paddingLeft={2} paddingBottom={0}>
@@ -199,6 +205,23 @@ export function InputBar({
           })}
         </Box>
       )}
+      {/* Context bar: compact token usage progress bar */}
+      {contextInfo && (() => {
+        const { tokenUsage, effectiveWindow, warningState } = contextInfo;
+        const usedPct = effectiveWindow > 0 ? Math.round((tokenUsage / effectiveWindow) * 100) : 0;
+        const barLen = 20;
+        const filled = effectiveWindow > 0 ? Math.min(barLen, Math.round(barLen * tokenUsage / effectiveWindow)) : 0;
+        const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
+        const fmt = (n: number) => n.toLocaleString();
+        const barColor = warningState === "blocking" ? "red" : (warningState === "auto_compact" || warningState === "warning") ? "yellow" : "green";
+        return (
+          <Box paddingLeft={1}>
+            <Text dimColor>{" Context "}</Text>
+            <Text color={barColor}>{bar}</Text>
+            <Text dimColor>{` ${fmt(tokenUsage)} / ${fmt(effectiveWindow)} (${usedPct}%)`}</Text>
+          </Box>
+        );
+      })()}
       {/* Input line */}
       <Box borderStyle="single" borderColor={isQueryRunning ? "yellow" : "gray"} paddingLeft={1} paddingRight={1}>
         <Text color="gray" bold>

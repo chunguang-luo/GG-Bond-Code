@@ -8,22 +8,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef } from "react";
-import { Box, Text, useInput, useApp, useStdout } from "ink";
-
-/** ANSI escape: erase current line and move cursor up one line. */
-const ERASE_LINE = "\x1b[2K";
-const CURSOR_UP = "\x1b[1A";
-const CURSOR_LEFT = "\x1b[G";
-
-/** Erase N terminal lines (current line + N-1 above). */
-function eraseLines(count: number): string {
-  let clear = "";
-  for (let i = 0; i < count; i++) {
-    clear += ERASE_LINE + (i < count - 1 ? CURSOR_UP : "");
-  }
-  if (count) clear += CURSOR_LEFT;
-  return clear;
-}
+import { Box, Text, useInput, useApp } from "ink";
 import { IPCTransport } from "./ipc/transport";
 import { CoreToInk, InkToCore, Message, CommandInfo } from "./ipc/protocol";
 import { MessageList } from "./components/message-list";
@@ -102,8 +87,14 @@ export function App({ transport }: AppProps) {
   const [commands, setCommands] = useState<CommandInfo[]>([]);
   const [renderTick, setRenderTick] = useState(0);
   const [showWelcome, setShowWelcome] = useState(true);
-  const { stdout: appStdout } = useStdout();
-  const [columns, setColumns] = useState(appStdout?.columns || 120);
+
+  // Context bar state: shows compact token usage progress bar above input
+  const [contextInfo, setContextInfo] = useState<{
+    tokenUsage: number;
+    effectiveWindow: number;
+    warningState: string;
+  } | null>(null);
+  const [showContextBar, setShowContextBar] = useState(false);
 
   // Background task tracking: count of running bash/agent tasks
   const [bgTaskCount, setBgTaskCount] = useState({ bash: 0, agent: 0 });
@@ -181,19 +172,6 @@ export function App({ transport }: AppProps) {
       }
     };
   }, []);
-
-  // Handle terminal resize — clear dynamic area to prevent misaligned output
-  // when the window gets narrower (Ink's log-update previousLineCount may be
-  // too low after resize, causing old content to remain on screen).
-  useEffect(() => {
-    if (!appStdout) return;
-    const handleResize = () => {
-      appStdout.write(eraseLines(20));
-      setColumns(appStdout.columns || 120);
-    };
-    appStdout.on("resize", handleResize);
-    return () => { appStdout.off("resize", handleResize); };
-  }, [appStdout]);
 
   // Derive currentText from ref for rendering
   const currentText = currentTextRef.current;
@@ -378,30 +356,56 @@ export function App({ transport }: AppProps) {
         }
 
         case CoreToInk.AGENT_PROGRESS: {
-          // No longer updating agent_start message — it's in <Static> now,
-          // so mutations after render won't be reflected. Tool count is shown
-          // in the agent_result message instead.
+          // Update the corresponding agent_start message with tool count
+          const progress = msg.payload as { agent_id?: string; tool_use_count?: number };
+          if (progress.agent_id) {
+            setMessages((prev) => prev.map((m) => {
+              if (m.type === "agent_start" && m.metadata?.agent_id === progress.agent_id) {
+                return { ...m, metadata: { ...m.metadata, _tool_use_count: progress.tool_use_count || 0 } };
+              }
+              return m;
+            }));
+          }
           break;
         }
 
         case CoreToInk.AGENT_RESULT: {
-          // Add agent_result message with final info — no longer mutating
-          // the agent_start message since it's rendered in <Static>.
+          // Update the corresponding agent_start message AND add a separate agent_result message.
+          // The agent_start update stops the timer and shows Done status.
+          // The separate agent_result message ensures correct rendering when multiple
+          // agents of the same type run in parallel (each gets its own result line).
           const resultPayload = msg.payload as { agent_id?: string; elapsed?: string; tool_use_count?: number; agent_type?: string };
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: nextId(),
-              type: "agent_result",
-              content: "",
-              metadata: {
-                agent_id: resultPayload.agent_id,
-                agent_type: resultPayload.agent_type,
-                _elapsed: resultPayload.elapsed || "",
-                tool_use_count: resultPayload.tool_use_count || 0,
-              },
-            },
-          ]);
+          if (resultPayload.agent_id) {
+            setMessages((prev) => {
+              const updated = prev.map((m) => {
+                if (m.type === "agent_start" && m.metadata?.agent_id === resultPayload.agent_id) {
+                  return {
+                    ...m,
+                    type: "agent_start",
+                    metadata: {
+                      ...m.metadata,
+                      _done: true,
+                      _finalElapsed: resultPayload.elapsed || "",
+                      _tool_use_count: resultPayload.tool_use_count || m.metadata?._tool_use_count || 0,
+                    },
+                  };
+                }
+                return m;
+              });
+              // Add a separate agent_result message with elapsed and tool count
+              return [...updated, {
+                id: nextId(),
+                type: "agent_result" as const,
+                content: "",
+                metadata: {
+                  agent_id: resultPayload.agent_id,
+                  agent_type: resultPayload.agent_type,
+                  _elapsed: resultPayload.elapsed || "",
+                  tool_use_count: resultPayload.tool_use_count || 0,
+                },
+              }];
+            });
+          }
           break;
         }
 
@@ -480,37 +484,58 @@ export function App({ transport }: AppProps) {
             messageCount?: number;
             warningState?: string;
             percentLeft?: number;
+            auto?: boolean;
           };
           const usage = ctx.tokenUsage ?? 0;
           const effective = ctx.effectiveWindow ?? 1;
-          const usedPct = effective > 0 ? Math.round((usage / effective) * 100) : 0;
-          const barLen = 30;
-          const filled = effective > 0 ? Math.min(barLen, Math.round(barLen * usage / effective)) : 0;
-          const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
-          const stateIcon = ctx.warningState === "blocking" ? "🔴" : ctx.warningState === "auto_compact" ? "🟡" : ctx.warningState === "warning" ? "🟡" : "🟢";
-          const stateLabel = ctx.warningState === "blocking" ? "Blocking" : ctx.warningState === "auto_compact" ? "Auto-Compact" : ctx.warningState === "warning" ? "Warning" : "OK";
-          const fmt = (n: number) => n.toLocaleString();
 
-          const lines = [
-            `Model:           ${ctx.model ?? "unknown"}`,
-            `Context Window:   ${fmt(ctx.contextWindow ?? 0)} tokens`,
-            `Max Output:       ${fmt(ctx.maxOutputTokens ?? 0)} tokens`,
-            `Effective Window: ${fmt(effective)} tokens`,
-            `Auto-Compact at:  ${fmt(ctx.autoCompactThreshold ?? 0)} tokens (${ctx.autoCompactThreshold && effective ? Math.round(ctx.autoCompactThreshold / effective * 100) : 0}% of effective)`,
-            `Blocking at:      ${fmt(ctx.blockingAt ?? 0)} tokens`,
-            ``,
-            `Token Usage:      ${fmt(usage)} / ${fmt(effective)} (${usedPct}%)`,
-            `                  ${bar} ${usedPct}%`,
-            `Messages:         ${ctx.messageCount ?? 0}`,
-            ``,
-            `Warning State:    ${stateIcon} ${stateLabel}`,
-            `Percent Left:     ${ctx.percentLeft ?? 100}%`,
-          ];
+          // Always update context bar state
+          setContextInfo({
+            tokenUsage: usage,
+            effectiveWindow: effective,
+            warningState: ctx.warningState ?? "ok",
+          });
 
-          setMessages((prev) => [
-            ...prev,
-            { id: nextId(), type: "info", content: lines.join("\n") },
-          ]);
+          if (ctx.auto) {
+            // Auto-update from backend (after query completion): only refresh bar, no message
+            // If context bar is not yet shown, show it on first auto-update
+            if (!showContextBar) {
+              setShowContextBar(true);
+            }
+          } else {
+            // Manual /context command: show detailed info in message list + toggle bar
+            const usedPct = effective > 0 ? Math.round((usage / effective) * 100) : 0;
+            const barLen = 30;
+            const filled = effective > 0 ? Math.min(barLen, Math.round(barLen * usage / effective)) : 0;
+            const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
+            const stateIcon = ctx.warningState === "blocking" ? "🔴" : ctx.warningState === "auto_compact" ? "🟡" : ctx.warningState === "warning" ? "🟡" : "🟢";
+            const stateLabel = ctx.warningState === "blocking" ? "Blocking" : ctx.warningState === "auto_compact" ? "Auto-Compact" : ctx.warningState === "warning" ? "Warning" : "OK";
+            const fmt = (n: number) => n.toLocaleString();
+
+            const lines = [
+              `Model:           ${ctx.model ?? "unknown"}`,
+              `Context Window:   ${fmt(ctx.contextWindow ?? 0)} tokens`,
+              `Max Output:       ${fmt(ctx.maxOutputTokens ?? 0)} tokens`,
+              `Effective Window: ${fmt(effective)} tokens`,
+              `Auto-Compact at:  ${fmt(ctx.autoCompactThreshold ?? 0)} tokens (${ctx.autoCompactThreshold && effective ? Math.round(ctx.autoCompactThreshold / effective * 100) : 0}% of effective)`,
+              `Blocking at:      ${fmt(ctx.blockingAt ?? 0)} tokens`,
+              ``,
+              `Token Usage:      ${fmt(usage)} / ${fmt(effective)} (${usedPct}%)`,
+              `                  ${bar} ${usedPct}%`,
+              `Messages:         ${ctx.messageCount ?? 0}`,
+              ``,
+              `Warning State:    ${stateIcon} ${stateLabel}`,
+              `Percent Left:     ${ctx.percentLeft ?? 100}%`,
+            ];
+
+            setMessages((prev) => [
+              ...prev,
+              { id: nextId(), type: "info", content: lines.join("\n") },
+            ]);
+
+            // Toggle context bar visibility
+            setShowContextBar((prev) => !prev);
+          }
           break;
         }
 
@@ -930,7 +955,7 @@ export function App({ transport }: AppProps) {
           isQueryRunning={isQueryRunning}
           model={model}
           commands={commands}
-          columns={columns}
+          contextInfo={showContextBar ? contextInfo : null}
         />
       )}
     </Box>

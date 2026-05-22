@@ -208,6 +208,8 @@ class IPCBridge:
             await self.transport.send_event(CoreToInk.CONTEXT_INFO, result.content)
         elif result.type == ResultType.COMPACT_COMPLETE:
             await self.transport.send_event(CoreToInk.COMPACT_COMPLETE, result.content)
+            # Auto-update context bar after compact changes token usage
+            await self._send_auto_context_info()
         elif result.type == ResultType.UNKNOWN_COMMAND:
             hint = f"Unknown command: {result.content['command']}"
             if result.content.get("suggestion"):
@@ -240,6 +242,10 @@ class IPCBridge:
                 await self._emit_event(event)
             # Query completed normally — send COMPLETE event
             reason = self._runner.loop_state.transition.value if self._runner.loop_state.transition else "done"
+
+            # Auto-send context info for status bar updates
+            await self._send_auto_context_info()
+
             await self.transport.send_event(CoreToInk.QUERY_COMPLETE.value, {
                 "transitionReason": reason,
                 "turnCount": self._runner.loop_state.turn_count,
@@ -264,6 +270,52 @@ class IPCBridge:
             # Notify frontend that the queued message is now being processed
             await self.transport.send_event(CoreToInk.QUERY_DEQUEUE.value, {"text": next_message})
             self._query_task = asyncio.create_task(self._run_query(next_message))
+
+    async def _send_auto_context_info(self) -> None:
+        """Send context info automatically for status bar updates.
+
+        Unlike the /context command, this is a lightweight update that
+        only refreshes the status bar — it doesn't display detailed info
+        in the message list. The `auto: true` flag tells the frontend
+        to only update the context bar state without toggling or showing details.
+        """
+        try:
+            from ..api.models import get_model_spec, get_context_window_for_model, get_max_output_tokens_for_model
+            from ..compact.budget import (
+                estimate_token_count,
+                get_effective_context_window,
+                get_auto_compact_threshold,
+                calculate_token_warning_state,
+            )
+
+            store = Store()
+            model = self.model or store.get("model", "deepseek-chat")
+            spec = get_model_spec(model)
+            messages = store.get("messages", [])
+            token_usage = estimate_token_count(messages)
+            effective = get_effective_context_window(model)
+            warning_state = calculate_token_warning_state(token_usage, model)
+
+            await self.transport.send_event(CoreToInk.CONTEXT_INFO.value, {
+                "model": model,
+                "contextWindow": spec.context_window,
+                "maxOutputTokens": spec.max_output_tokens,
+                "tokenUsage": token_usage,
+                "effectiveWindow": effective,
+                "autoCompactThreshold": get_auto_compact_threshold(model),
+                "blockingAt": effective - 3000,
+                "messageCount": len(messages),
+                "warningState": (
+                    "blocking" if warning_state.is_at_blocking
+                    else "auto_compact" if warning_state.is_above_auto_compact
+                    else "warning" if warning_state.is_above_warning
+                    else "ok"
+                ),
+                "percentLeft": warning_state.percent_left,
+                "auto": True,
+            })
+        except Exception:
+            logger.debug("Auto context info failed (non-critical)", exc_info=True)
 
     # Mapping from sub-agent event types to agent-specific IPC message types.
     # Events with source="agent" use these instead of the parent QUERY_EVENT_MAP,
