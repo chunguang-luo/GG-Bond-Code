@@ -288,10 +288,10 @@ class IPCBridge:
                 calculate_token_warning_state,
             )
 
-            store = Store()
-            model = self.model or store.get("model", "deepseek-chat")
+            model = self.model or self._context.get_state("model") or "deepseek-chat"
             spec = get_model_spec(model)
-            messages = store.get("messages", [])
+            # Use self._context to get messages, not a separate Store instance
+            messages = self._context.get_state("messages") or []
             token_usage = estimate_token_count(messages)
             effective = get_effective_context_window(model)
             warning_state = calculate_token_warning_state(token_usage, model)
