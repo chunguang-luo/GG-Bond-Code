@@ -23,6 +23,9 @@ from .compact.strategy import should_compact_messages, MessageCountStrategy
 from .compact.warning import CompactWarningManager
 from .compact.manager import CompactManager, CompactLevel
 from .compact.budget import estimate_token_count
+from .memory.session_extract import SessionMemoryState
+from .memory.session_memory import SessionMemoryManager
+from .memory.extract import execute_extract_memories, init_extract_memories
 
 
 @dataclass
@@ -84,6 +87,31 @@ class QueryRunner:
         self._streaming_executor: StreamingToolExecutor | None = None
         self._loop_state = LoopState()
         self._warning_manager = CompactWarningManager()
+
+        # Session Memory — track for extraction triggers
+        self._session_memory_state = SessionMemoryState()
+        self._session_memory_manager = SessionMemoryManager()
+        # Connect SessionMemoryManager to CompactManager for compact协同
+        self._compact_manager.set_session_memory_manager(self._session_memory_manager)
+
+    def _maybe_trigger_memory_extraction(self, messages: list[dict[str, Any]]) -> None:
+        """Check if memory extraction should be triggered and launch it.
+
+        Called after tool execution to record the tool call and potentially
+        trigger a background extraction agent.
+        """
+        # Record the tool call for Session Memory threshold tracking
+        self._session_memory_state.record_tool_call()
+
+        # Check token usage for extraction threshold
+        token_usage = self._compact_manager.get_token_usage(messages)
+        has_tool_calls_in_last_turn = True  # We're in tool execution path
+
+        if self._session_memory_state.should_extract(token_usage, has_tool_calls_in_last_turn):
+            # Fire-and-forget: launch extraction in background
+            asyncio.create_task(
+                execute_extract_memories(messages, self._context)
+            )
 
     @property
     def permissions(self) -> PermissionManager:
@@ -378,6 +406,9 @@ class QueryRunner:
                         async for event in self._yield_and_append_tool_result(result, messages):
                             yield event
 
+                    # Trigger memory extraction check
+                    self._maybe_trigger_memory_extraction(messages)
+
                     self._loop_state.set_transition(TransitionReason.TOOL_COMPLETED, detail=self._format_tool_labels(tool_use_blocks))
                 else:
                     # Serial mode: execute tools one by one with permission checks
@@ -392,6 +423,9 @@ class QueryRunner:
                             seen_agent_types.add(sub_type)
                         async for event in self._execute_serial_tool(tb, messages):
                             yield event
+
+                    # Trigger memory extraction check
+                    self._maybe_trigger_memory_extraction(messages)
 
                     self._loop_state.set_transition(TransitionReason.TOOL_COMPLETED, detail=self._format_tool_labels(tool_use_blocks))
 
