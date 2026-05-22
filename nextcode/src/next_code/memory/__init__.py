@@ -1,7 +1,7 @@
 """Memory 系统 — 五层记忆架构。
 
 Phase 1: Auto Memory 基础设施（路径解析、分类法、索引管理、目录保证、Prompt 注入）
-Phase 2: NEXTCODE.md 多级发现（context/claudemd.py）
+Phase 2: NEXTCODE.md 多级发现（context/nextcodemd.py）
 Phase 3: Session Memory（结构化模板、双阈值触发、Compact 协同）
 Phase 4: 后台提取 Agent（闭包状态、互斥、合并模式）
 Phase 5: Agent Memory（三种 scope 路径路由）

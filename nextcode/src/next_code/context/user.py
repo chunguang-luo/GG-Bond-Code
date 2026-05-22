@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from next_code.context.claudemd import load_all_nextcode_md
+from next_code.context.nextcodemd import load_all_nextcode_md
 from next_code.memory.index import read_index as read_memory_index
 
 
