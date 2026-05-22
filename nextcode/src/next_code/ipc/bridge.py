@@ -184,7 +184,14 @@ class IPCBridge:
 
         # Interpret result for IPC output
         if result.type == ResultType.TEXT:
-            await self.transport.send_event("query.info", {"message": result.content["message"]})
+            # Support both 'message' and 'content' fields
+            message = result.content.get("message")
+            if message is None:
+                message = result.content.get("content", "")
+            # Optionally prepend title
+            if "title" in result.content and message:
+                message = f"**{result.content['title']}**\n\n{message}"
+            await self.transport.send_event("query.info", {"message": message})
         elif result.type == ResultType.CLEAR:
             self._message_queue.clear()
             self._context = create_store_context()

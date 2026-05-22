@@ -62,4 +62,11 @@ def _get_dynamic_sections(cwd: str | None = None) -> list[str]:
         if result:
             sections.append(result)
 
+        # Memory system section
+        from next_code.memory.prompt import load_memory_prompt
+
+        memory_prompt = load_memory_prompt(cwd)
+        if memory_prompt:
+            sections.append(memory_prompt)
+
     return sections

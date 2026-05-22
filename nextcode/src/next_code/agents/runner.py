@@ -74,6 +74,18 @@ async def run_agent(
 
     system_prompt = build_agent_system_prompt(agent_def, parent_context)
 
+    # Load Agent Memory if memory_scope is set
+    if agent_def.memory_scope:
+        from ..memory.agent_memory import load_agent_memory_prompt
+
+        mem_prompt = load_agent_memory_prompt(
+            agent_def.memory_scope,
+            agent_def.agent_type,
+            parent_context.get_state("cwd"),
+        )
+        if mem_prompt:
+            system_prompt = f"{system_prompt}\n\n{mem_prompt}"
+
     # ── Phase 4: Context 隔离 ──────────────────────────────────
 
     agent_context = create_subagent_context(

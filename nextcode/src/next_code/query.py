@@ -381,7 +381,15 @@ class QueryRunner:
                     self._loop_state.set_transition(TransitionReason.TOOL_COMPLETED, detail=self._format_tool_labels(tool_use_blocks))
                 else:
                     # Serial mode: execute tools one by one with permission checks
+                    # Deduplicate Agent calls: same subagent_type only once per turn
+                    seen_agent_types: set[str] = set()
                     for tb in tool_use_blocks:
+                        if tb.get("name") == "Agent":
+                            sub_type = tb.get("input", {}).get("subagent_type", "general-purpose")
+                            if sub_type in seen_agent_types:
+                                logger.warning("Skipping duplicate Agent: subagent_type=%s", sub_type)
+                                continue
+                            seen_agent_types.add(sub_type)
                         async for event in self._execute_serial_tool(tb, messages):
                             yield event
 

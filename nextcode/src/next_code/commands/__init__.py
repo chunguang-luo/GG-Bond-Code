@@ -28,6 +28,7 @@ def create_builtin_registry() -> CommandRegistry:
     from .model import create as create_model
     from .log import create as create_log
     from .exit import create as create_exit
+    from .memory import create as create_memory
 
     registry = CommandRegistry()
 
@@ -41,6 +42,7 @@ def create_builtin_registry() -> CommandRegistry:
         create_model,
         create_log,
         create_exit,
+        create_memory,
     ]:
         registry.register(factory())
 

@@ -8,7 +8,22 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef } from "react";
-import { Box, Text, useInput, useApp } from "ink";
+import { Box, Text, useInput, useApp, useStdout } from "ink";
+
+/** ANSI escape: erase current line and move cursor up one line. */
+const ERASE_LINE = "\x1b[2K";
+const CURSOR_UP = "\x1b[1A";
+const CURSOR_LEFT = "\x1b[G";
+
+/** Erase N terminal lines (current line + N-1 above). */
+function eraseLines(count: number): string {
+  let clear = "";
+  for (let i = 0; i < count; i++) {
+    clear += ERASE_LINE + (i < count - 1 ? CURSOR_UP : "");
+  }
+  if (count) clear += CURSOR_LEFT;
+  return clear;
+}
 import { IPCTransport } from "./ipc/transport";
 import { CoreToInk, InkToCore, Message, CommandInfo } from "./ipc/protocol";
 import { MessageList } from "./components/message-list";
@@ -87,6 +102,8 @@ export function App({ transport }: AppProps) {
   const [commands, setCommands] = useState<CommandInfo[]>([]);
   const [renderTick, setRenderTick] = useState(0);
   const [showWelcome, setShowWelcome] = useState(true);
+  const { stdout: appStdout } = useStdout();
+  const [columns, setColumns] = useState(appStdout?.columns || 120);
 
   // Background task tracking: count of running bash/agent tasks
   const [bgTaskCount, setBgTaskCount] = useState({ bash: 0, agent: 0 });
@@ -164,6 +181,19 @@ export function App({ transport }: AppProps) {
       }
     };
   }, []);
+
+  // Handle terminal resize — clear dynamic area to prevent misaligned output
+  // when the window gets narrower (Ink's log-update previousLineCount may be
+  // too low after resize, causing old content to remain on screen).
+  useEffect(() => {
+    if (!appStdout) return;
+    const handleResize = () => {
+      appStdout.write(eraseLines(20));
+      setColumns(appStdout.columns || 120);
+    };
+    appStdout.on("resize", handleResize);
+    return () => { appStdout.off("resize", handleResize); };
+  }, [appStdout]);
 
   // Derive currentText from ref for rendering
   const currentText = currentTextRef.current;
@@ -348,39 +378,30 @@ export function App({ transport }: AppProps) {
         }
 
         case CoreToInk.AGENT_PROGRESS: {
-          // Update the corresponding agent_start message with tool count
-          const progress = msg.payload as { agent_id?: string; tool_use_count?: number };
-          if (progress.agent_id) {
-            setMessages((prev) => prev.map((m) => {
-              if (m.type === "agent_start" && m.metadata?.agent_id === progress.agent_id) {
-                return { ...m, metadata: { ...m.metadata, _tool_use_count: progress.tool_use_count || 0 } };
-              }
-              return m;
-            }));
-          }
+          // No longer updating agent_start message — it's in <Static> now,
+          // so mutations after render won't be reflected. Tool count is shown
+          // in the agent_result message instead.
           break;
         }
 
         case CoreToInk.AGENT_RESULT: {
-          // Update the corresponding agent_start message: mark Done, stop timer, set final values
-          const resultPayload = msg.payload as { agent_id?: string; elapsed?: string; tool_use_count?: number };
-          if (resultPayload.agent_id) {
-            setMessages((prev) => prev.map((m) => {
-              if (m.type === "agent_start" && m.metadata?.agent_id === resultPayload.agent_id) {
-                return {
-                  ...m,
-                  type: "agent_start",  // keep same type but update state
-                  metadata: {
-                    ...m.metadata,
-                    _done: true,
-                    _finalElapsed: resultPayload.elapsed || "",
-                    _tool_use_count: resultPayload.tool_use_count || m.metadata?._tool_use_count || 0,
-                  },
-                };
-              }
-              return m;
-            }));
-          }
+          // Add agent_result message with final info — no longer mutating
+          // the agent_start message since it's rendered in <Static>.
+          const resultPayload = msg.payload as { agent_id?: string; elapsed?: string; tool_use_count?: number; agent_type?: string };
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextId(),
+              type: "agent_result",
+              content: "",
+              metadata: {
+                agent_id: resultPayload.agent_id,
+                agent_type: resultPayload.agent_type,
+                _elapsed: resultPayload.elapsed || "",
+                tool_use_count: resultPayload.tool_use_count || 0,
+              },
+            },
+          ]);
           break;
         }
 
@@ -909,6 +930,7 @@ export function App({ transport }: AppProps) {
           isQueryRunning={isQueryRunning}
           model={model}
           commands={commands}
+          columns={columns}
         />
       )}
     </Box>

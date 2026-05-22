@@ -96,6 +96,10 @@ class StreamingToolExecutor:
         """Add a tool_use block to the execution queue.
 
         Called during streaming as each tool_use block arrives.
+
+        Deduplication: If the tool is an Agent call, skip it when an Agent
+        of the same subagent_type is already pending or completed. This
+        prevents the model from spawning duplicate Agents in a single turn.
         """
         if self._discarded:
             return
@@ -103,6 +107,23 @@ class StreamingToolExecutor:
         tool_name = tool_block.get("name", "")
         tool = self.registry.get(tool_name)
         is_safe = tool.is_concurrency_safe(tool_block.get("input", {})) if tool else False
+
+        # Deduplicate Agent calls: same subagent_type only once per turn
+        if tool_name == "Agent":
+            subagent_type = tool_block.get("input", {}).get("subagent_type", "general-purpose")
+            existing_types = set()
+            for ex in self._pending:
+                if ex.tool_name == "Agent":
+                    existing_types.add(ex.input.get("subagent_type", "general-purpose"))
+            for ex in self._completed:
+                if ex.tool_name == "Agent":
+                    existing_types.add(ex.input.get("subagent_type", "general-purpose"))
+            if subagent_type in existing_types:
+                logger.warning(
+                    "Skipping duplicate Agent call: subagent_type=%s already queued/completed",
+                    subagent_type,
+                )
+                return
 
         execution = ToolExecution(
             tool_use_id=tool_block.get("id", ""),

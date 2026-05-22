@@ -48,10 +48,15 @@ class CompactManager:
         self._circuit_breaker = CompactCircuitBreaker(max_failures=3)
         self._full_strategy = FullCompactStrategy()
         self._file_cache = file_cache
+        self._session_memory_manager: Any = None  # SessionMemoryManager, set externally
 
     @property
     def circuit_breaker(self) -> CompactCircuitBreaker:
         return self._circuit_breaker
+
+    def set_session_memory_manager(self, manager: Any) -> None:
+        """Set the SessionMemoryManager for compact coordination."""
+        self._session_memory_manager = manager
 
     def evaluate(self, token_usage: int) -> tuple[CompactLevel, TokenWarningState]:
         """Evaluate what compaction level is needed.
@@ -112,6 +117,19 @@ class CompactManager:
             level = CompactLevel.FULL
 
         if level == CompactLevel.FULL:
+            # Try to use Session Memory before compacting
+            if self._session_memory_manager is not None:
+                session_content = await self._session_memory_manager.wait_for_extraction_async()
+                if session_content:
+                    # Use Session Memory as compact summary (saves an API call)
+                    compacted = self._build_session_memory_compact(messages, session_content)
+                    # Re-inject recently accessed file contents after compact
+                    compacted = self._rebuild_after_compact(compacted)
+                    if self._file_cache is not None:
+                        self._file_cache.clear()
+                    return compacted, "Compacted using Session Memory (no API call needed)"
+
+            # Fall back to model-summarized compact
             compacted, reason = await self._full_strategy.compact(messages, self._model)
             # Sync circuit breaker state
             self._circuit_breaker._consecutive_failures = (
@@ -129,6 +147,34 @@ class CompactManager:
     def get_token_usage(self, messages: list[dict[str, Any]]) -> int:
         """Estimate token usage for a message list."""
         return estimate_token_count(messages)
+
+    def _build_session_memory_compact(
+        self,
+        messages: list[dict[str, Any]],
+        session_content: str,
+    ) -> list[dict[str, Any]]:
+        """Build compacted messages using Session Memory content.
+
+        Replaces the full conversation with a summary message containing
+        the Session Memory, plus the most recent user message.
+        """
+        summary = f"[Context compacted — Session Memory]\n\n{session_content}"
+        summary_message = {"role": "user", "content": summary}
+
+        if not messages:
+            return [summary_message]
+
+        # Keep the most recent user message if available
+        recent_user = None
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                recent_user = msg
+                break
+
+        if recent_user:
+            return [summary_message, recent_user]
+
+        return [summary_message]
 
     def _rebuild_after_compact(
         self,

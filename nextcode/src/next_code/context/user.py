@@ -7,6 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from next_code.context.claudemd import load_all_nextcode_md
+from next_code.memory.index import read_index as read_memory_index
+
 
 def _find_project_root(start: str) -> str:
     """Find project root by looking for .git or .nextcode directory."""
@@ -29,33 +32,16 @@ def get_user_context(cwd: str | None = None) -> dict[str, str]:
     }
 
     if cwd:
-        nextcode_md = _load_nextcode_md(cwd)
+        nextcode_md = load_all_nextcode_md(cwd)
         if nextcode_md:
             context["nextcode_md"] = nextcode_md
 
+        # Memory system index
+        memory_index = read_memory_index(cwd)
+        if memory_index and memory_index.strip():
+            context["memory_index"] = memory_index.strip()
+
     return context
-
-
-def _load_nextcode_md(cwd: str) -> str | None:
-    """Load NEXTCODE.md from .nextcode directory in project root."""
-    try:
-        project_root = _find_project_root(cwd)
-        nextcode_dir = Path(project_root) / ".nextcode"
-        nextcode_path = nextcode_dir / "NEXTCODE.md"
-
-        if not nextcode_path.exists():
-            return None
-
-        with open(nextcode_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        if not content.strip():
-            return None
-
-        return content.strip()
-
-    except (IOError, OSError):
-        return None
 
 
 def prepend_user_context(
@@ -74,6 +60,8 @@ def prepend_user_context(
     context_parts = []
     if "nextcode_md" in context:
         context_parts.append(f"# NEXTCODE Project Memory\n{context['nextcode_md']}")
+    if "memory_index" in context:
+        context_parts.append(f"# Memory Index\n{context['memory_index']}")
     if "current_date" in context:
         context_parts.append(context["current_date"])
 

@@ -19,6 +19,7 @@ def get_builtin_agents() -> list[AgentDefinition]:
             "not confident that a single, focused sub-agent can handle the task.",
             source=AgentSource.BUILTIN,
             tools=["*"],
+            memory_scope="local",  # 本地记忆，随项目但不提交 Git
         ),
         AgentDefinition(
             agent_type="Explore",
@@ -29,10 +30,11 @@ def get_builtin_agents() -> list[AgentDefinition]:
             "level: quick for basic searches, medium for moderate exploration, "
             "very thorough for comprehensive analysis.",
             source=AgentSource.BUILTIN,
-            disallowed_tools=["Edit", "Write", "NotebookEdit", "Agent"],
+            disallowed_tools=["Edit", "NotebookEdit", "Agent"],
             model=None,  # inherit from parent
             omit_nextcode_md=True,
             omit_git_status=True,
+            memory_scope="project",  # 项目级记忆，团队共享项目结构知识
         ),
         AgentDefinition(
             agent_type="Plan",
@@ -42,9 +44,10 @@ def get_builtin_agents() -> list[AgentDefinition]:
             "Returns step-by-step plans, identifies critical files, and considers "
             "architectural trade-offs.",
             source=AgentSource.BUILTIN,
-            disallowed_tools=["Edit", "Write", "NotebookEdit"],
+            disallowed_tools=["Edit", "NotebookEdit"],
             omit_nextcode_md=True,
             omit_git_status=True,
+            memory_scope="local",  # 本地记忆，记住用户偏好（如先列选项再实现）
         ),
         AgentDefinition(
             agent_type="Verification",
@@ -54,11 +57,12 @@ def get_builtin_agents() -> list[AgentDefinition]:
             "or auditing code. Actually runs commands and tests rather than just "
             "reading code. Returns PASS/FAIL/PARTIAL verdict.",
             source=AgentSource.BUILTIN,
-            disallowed_tools=["Edit", "Write", "NotebookEdit"],
+            disallowed_tools=["Edit", "NotebookEdit"],
             model=None,  # inherit — needs strong reasoning
             permission_mode="dontAsk",
             omit_nextcode_md=True,
             omit_git_status=True,
+            memory_scope="local",  # 本地记忆，记住本机测试配置
         ),
         AgentDefinition(
             agent_type="Guide",
@@ -72,6 +76,7 @@ def get_builtin_agents() -> list[AgentDefinition]:
             permission_mode="dontAsk",
             omit_nextcode_md=True,
             omit_git_status=True,
+            memory_scope="user",  # 用户级记忆，跨项目共享功能知识
             get_system_prompt=_build_guide_prompt,
         ),
     ]

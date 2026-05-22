@@ -22,6 +22,7 @@ interface InputBarProps {
   isQueryRunning?: boolean;
   model?: string;
   commands?: CommandInfo[];
+  columns?: number;
 }
 
 export function InputBar({
@@ -32,6 +33,7 @@ export function InputBar({
   isQueryRunning,
   model,
   commands = [],
+  columns,
 }: InputBarProps) {
   // Build a flat list of all command names + aliases for Tab completion
   const allCommandNames = useMemo(() => {
@@ -170,7 +172,7 @@ export function InputBar({
   const rightOfCursor = value.slice(cursor);
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={columns}>
       {/* Command suggestions */}
       {matchingCommands.length > 0 && (
         <Box flexDirection="column" paddingLeft={2} paddingBottom={0}>
