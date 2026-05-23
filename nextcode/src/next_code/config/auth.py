@@ -35,7 +35,7 @@ def resolve_api_key() -> str | None:
             logger.warning(
                 "Unknown model '%s'. "
                 "Please configure a valid model name via --model, NEXTCODE_MODEL, "
-                "or ~/.nextcode/.settings.json (e.g. {\"model\": \"deepseek-chat\"}).",
+                "or ~/.nextcode/.settings.json.",
                 model,
             )
 
@@ -61,3 +61,52 @@ def configure_api_key() -> None:
     # Also update in-memory settings
     update_setting("api_key", key)
     print(f"API key saved to {config_path}")
+
+
+def configure_interactive() -> None:
+    """Interactive guided setup for API key, base URL, and model.
+
+    Prompts for any missing required configuration and saves to
+    the global ~/.nextcode/.settings.json file.
+    """
+    from .settings import _load_json, _save_json
+
+    config_path = Path.home() / ".nextcode" / ".settings.json"
+    data = _load_json(config_path)
+
+    current_key = get_setting("api_key", "")
+    current_url = get_setting("base_url", "")
+    current_model = get_setting("model", "")
+
+    # API Key
+    if current_key:
+        print(f"  API key: {'*' * 8}{current_key[-4:]} (already set)")
+    else:
+        key = input("  API key: ").strip()
+        if key:
+            data["api_key"] = key
+            update_setting("api_key", key)
+
+    # Base URL
+    if current_url:
+        print(f"  Base URL: {current_url} (already set)")
+    else:
+        print("  Base URL (e.g. https://api.deepseek.com, https://api.openai.com/v1):")
+        url = input("  > ").strip()
+        if url:
+            data["base_url"] = url
+            update_setting("base_url", url)
+
+    # Model
+    if current_model:
+        print(f"  Model: {current_model} (already set)")
+    else:
+        print("  Model name (e.g. deepseek-chat, claude-sonnet-4-5-20250514, gpt-4o):")
+        model = input("  > ").strip()
+        if model:
+            data["model"] = model
+            update_setting("model", model)
+
+    # Save to global config
+    _save_json(config_path, data)
+    print(f"\n  Configuration saved to {config_path}\n")

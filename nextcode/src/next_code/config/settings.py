@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULTS: dict[str, Any] = {
     "api_key": "",
-    "model": "deepseek-chat",
+    "model": "",
+    "base_url": "",
     "permissions": {
         "allow": [],
         "deny": [],

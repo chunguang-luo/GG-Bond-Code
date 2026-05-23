@@ -16,7 +16,7 @@ async def handle_summary(args: str, context: CommandContext) -> CommandResult:
         calculate_token_warning_state,
     )
 
-    model = context.model or context.store_get("model", "deepseek-chat")
+    model = context.model or context.store_get("model", "")
     spec = get_model_spec(model)
     messages = context.store_get("messages", [])
     session_start = context.store_get("session_start", 0)

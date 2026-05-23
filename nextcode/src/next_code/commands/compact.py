@@ -17,7 +17,7 @@ async def handle_compact(args: str, context: CommandContext) -> CommandResult:
         )
 
     from ..compact.manager import CompactManager, CompactLevel
-    model = context.model or context.store_get("model", "deepseek-chat")
+    model = context.model or context.store_get("model", "")
     manager = CompactManager(model=model)
     compacted, reason = await manager.execute(CompactLevel.FULL, messages)
     context.store_set("messages", compacted)

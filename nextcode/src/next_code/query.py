@@ -70,7 +70,7 @@ class QueryRunner:
             self._owns_context = True
 
         ctx = self._context
-        self.model = model or ctx.get_state("model") or "deepseek-chat"
+        self.model = model or ctx.get_state("model")
         self.family = get_model_family(self.model) or "openai"
         self.max_turns = max_turns
         self.system_prompt = build_system_prompt(cwd=ctx.get_state("cwd"))

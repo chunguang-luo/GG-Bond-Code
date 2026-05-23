@@ -56,7 +56,7 @@ async def run_agent(
     # 解析模型：Agent 定义 > 父级模型 > 默认
     model = agent_def.model
     if model is None or model == "inherit":
-        model = parent_context.get_state("model") or "deepseek-chat"
+        model = parent_context.get_state("model")
 
     # 构建初始消息
     if fork_messages is not None:

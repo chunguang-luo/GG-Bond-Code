@@ -31,7 +31,7 @@ def setup(cwd: str, model: str | None = None) -> None:
 
     # Model priority: CLI flag → config → default
     if not model:
-        model = get_setting("model", "deepseek-chat")
+        model = get_setting("model", "")
     store.set("model", model)
 
     # 3. Discover project root (walk up to find .git or .nextcode)

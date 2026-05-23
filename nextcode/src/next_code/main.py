@@ -127,10 +127,10 @@ async def _run_print_mode(ctx: click.Context) -> None:
 
 @cli.command()
 def auth() -> None:
-    """Configure API key."""
-    from .config.auth import configure_api_key
+    """Configure API key, base URL, and model."""
+    from .config.auth import configure_interactive
 
-    configure_api_key()
+    configure_interactive()
 
 
 @cli.command()

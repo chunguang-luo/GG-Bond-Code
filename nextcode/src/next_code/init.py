@@ -7,7 +7,7 @@ import logging
 import sys
 from typing import Optional
 
-from .config.settings import load_settings
+from .config.settings import load_settings, get_setting
 from .config.auth import resolve_api_key
 
 logger = logging.getLogger(__name__)
@@ -19,14 +19,21 @@ def init() -> None:
     # 1. Load settings (global + project)
     load_settings()
 
-    # 2. Resolve API key
+    # 2. Check required configuration — guide user through setup if missing
+    model = get_setting("model", "")
     api_key = resolve_api_key()
-    if not api_key:
-        print(
-            "Error: No API key found. Set NEXTCODE_API_KEY or ANTHROPIC_API_KEY or run 'nextcode auth'.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    base_url = get_setting("base_url", "")
+
+    if not api_key or not model or not base_url:
+        print("\n  Welcome to NextCode! Let's configure your setup.\n")
+        from .config.auth import configure_interactive
+        configure_interactive()
+        # Reload settings after interactive configuration
+        load_settings()
+        api_key = resolve_api_key()
+        if not api_key:
+            print("Error: API key is required. Run 'nextcode auth' to configure.", file=sys.stderr)
+            sys.exit(1)
 
     # 3. API preconnection (warm TCP+TLS)
     _preconnect(api_key)
