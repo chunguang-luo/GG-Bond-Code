@@ -20,6 +20,32 @@ interface ContextBarInfo {
   warningState: string;
 }
 
+/** Compute line index and column offset from a flat cursor position */
+function getCursorLineCol(value: string, cursor: number): { line: number; col: number } {
+  const lines = value.split("\n");
+  let offset = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const lineLen = lines[i].length;
+    if (offset + lineLen >= cursor) {
+      return { line: i, col: cursor - offset };
+    }
+    offset += lineLen + 1; // +1 for the \n
+  }
+  // Cursor at the very end
+  const lastIdx = lines.length - 1;
+  return { line: lastIdx, col: lines[lastIdx].length };
+}
+
+/** Compute flat cursor position from line index and column offset */
+function cursorFromLineCol(value: string, line: number, col: number): number {
+  const lines = value.split("\n");
+  let offset = 0;
+  for (let i = 0; i < line; i++) {
+    offset += lines[i].length + 1;
+  }
+  return offset + Math.min(col, lines[line].length);
+}
+
 interface InputBarProps {
   inputState: InputState;
   setInputState: (value: InputState | ((prev: InputState) => InputState)) => void;
@@ -77,9 +103,26 @@ export function InputBar({
     return [...new Set(matches)].slice(0, 8);
   }, [inputState.value, allCommandNames]);
 
+  // Handle Shift+Enter / Option+Enter via useInput.
+  // When Ink receives \x1b\r (Option+Enter), parseKeypress produces:
+  //   key.name = '' (not 'return'), key.meta = true (from \x1b prefix)
+  //   input = '\r' (the sequence after stripping \x1b)
+  // So we check for key.meta + input === '\r' to detect Option+Enter.
+  // For kitty/xterm sequences like \x1b[13;2u, parseKeypress produces:
+  //   key.name from fnKeyRe parsing, with key.shift = true
+  //   These won't match key.return, so they fall through to the else branch.
+
   useInput(
     (input, key) => {
-      if (key.return) {
+      // Option+Enter (macOS): \x1b\r → key.meta=true, input='\r'
+      // Shift+Enter (kitty): \x1b[13;2u → parsed by fnKeyRe, key.shift=true
+      if ((key.meta && input === "\r") || (key.shift && key.return)) {
+        // Insert newline at cursor
+        setInputState((prev) => ({
+          value: prev.value.slice(0, prev.cursor) + "\n" + prev.value.slice(prev.cursor),
+          cursor: prev.cursor + 1,
+        }));
+      } else if (key.return) {
         if (inputState.value.trim()) {
           // Save to history (skip duplicates)
           const val = inputState.value;
@@ -95,30 +138,48 @@ export function InputBar({
           setInputState({ value: "", cursor: 0 });
         }
       } else if (key.upArrow) {
-        // Navigate history backward (older)
-        const hist = historyRef.current;
-        if (hist.length === 0) return;
-        if (historyIndexRef.current === -1) {
-          // Save current draft before entering history
-          draftRef.current = inputState.value;
-          historyIndexRef.current = hist.length - 1;
-        } else if (historyIndexRef.current > 0) {
-          historyIndexRef.current -= 1;
-        }
-        const prev = hist[historyIndexRef.current];
-        setInputState({ value: prev, cursor: prev.length });
-      } else if (key.downArrow) {
-        // Navigate history forward (newer)
-        if (historyIndexRef.current === -1) return;
-        const hist = historyRef.current;
-        if (historyIndexRef.current < hist.length - 1) {
-          historyIndexRef.current += 1;
-          const next = hist[historyIndexRef.current];
-          setInputState({ value: next, cursor: next.length });
+        const lines = inputState.value.split("\n");
+        if (lines.length > 1) {
+          // Multi-line: move cursor up one line
+          const { line, col } = getCursorLineCol(inputState.value, inputState.cursor);
+          if (line > 0) {
+            const newCursor = cursorFromLineCol(inputState.value, line - 1, col);
+            setInputState((prev) => ({ ...prev, cursor: newCursor }));
+          }
         } else {
-          // Back to the draft
-          historyIndexRef.current = -1;
-          setInputState({ value: draftRef.current, cursor: draftRef.current.length });
+          // Single-line: navigate history backward (older)
+          const hist = historyRef.current;
+          if (hist.length === 0) return;
+          if (historyIndexRef.current === -1) {
+            draftRef.current = inputState.value;
+            historyIndexRef.current = hist.length - 1;
+          } else if (historyIndexRef.current > 0) {
+            historyIndexRef.current -= 1;
+          }
+          const prev = hist[historyIndexRef.current];
+          setInputState({ value: prev, cursor: prev.length });
+        }
+      } else if (key.downArrow) {
+        const lines = inputState.value.split("\n");
+        if (lines.length > 1) {
+          // Multi-line: move cursor down one line
+          const { line, col } = getCursorLineCol(inputState.value, inputState.cursor);
+          if (line < lines.length - 1) {
+            const newCursor = cursorFromLineCol(inputState.value, line + 1, col);
+            setInputState((prev) => ({ ...prev, cursor: newCursor }));
+          }
+        } else {
+          // Single-line: navigate history forward (newer)
+          if (historyIndexRef.current === -1) return;
+          const hist = historyRef.current;
+          if (historyIndexRef.current < hist.length - 1) {
+            historyIndexRef.current += 1;
+            const next = hist[historyIndexRef.current];
+            setInputState({ value: next, cursor: next.length });
+          } else {
+            historyIndexRef.current = -1;
+            setInputState({ value: draftRef.current, cursor: draftRef.current.length });
+          }
         }
       } else if (key.tab) {
         // Tab-complete slash commands
@@ -164,9 +225,11 @@ export function InputBar({
         setInputState((prev) => ({ ...prev, cursor: prev.value.length }));
       } else if (input && !key.ctrl && !key.meta) {
         // Insert text at cursor position (input may be multi-char from paste)
+        // Normalize \r\n to \n and strip standalone \r to avoid triggering submit
+        const sanitized = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
         setInputState((prev) => ({
-          value: prev.value.slice(0, prev.cursor) + input + prev.value.slice(prev.cursor),
-          cursor: prev.cursor + input.length,
+          value: prev.value.slice(0, prev.cursor) + sanitized + prev.value.slice(prev.cursor),
+          cursor: prev.cursor + sanitized.length,
         }));
       }
     },
@@ -174,8 +237,6 @@ export function InputBar({
   );
 
   const { value, cursor } = inputState;
-  const leftOfCursor = value.slice(0, cursor);
-  const rightOfCursor = value.slice(cursor);
 
   return (
     <Box flexDirection="column">
@@ -223,16 +284,43 @@ export function InputBar({
         );
       })()}
       {/* Input line */}
-      <Box borderStyle="single" borderColor={isQueryRunning ? "yellow" : "gray"} paddingLeft={1} paddingRight={1}>
-        <Text color="gray" bold>
-          {"nextcode "}
-        </Text>
-        <Text color="gray">{"❯ "}</Text>
-        <Text>{leftOfCursor}</Text>
-        {!disabled && <Text color={isQueryRunning ? "yellow" : "gray"} inverse>{rightOfCursor.length > 0 ? rightOfCursor[0] : " "}</Text>}
-        <Text>{rightOfCursor.length > 0 ? rightOfCursor.slice(1) : ""}</Text>
-        {disabled && <Text dimColor>{" waiting for permission..."}</Text>}
-        {isQueryRunning && !disabled && value.length === 0 && <Text dimColor color="yellow">{" type to queue a task..."}</Text>}
+      <Box flexDirection="column">
+        <Text color="gray">{"─".repeat(process.stdout.columns ?? 80)}</Text>
+        {(() => {
+          const lines = value.split("\n");
+          const { line: cursorLine, col: cursorCol } = getCursorLineCol(value, cursor);
+
+          return lines.map((line, i) => {
+            const isCursorLine = i === cursorLine;
+            const isFirstLine = i === 0;
+
+            if (isCursorLine) {
+              const leftPart = line.slice(0, cursorCol);
+              const cursorChar = line[cursorCol] || " ";
+              const rightPart = line.slice(cursorCol + 1);
+              return (
+                <Box key={i} paddingLeft={1} paddingRight={1}>
+                  <Text color="gray" bold>{isFirstLine ? "nextcode " : "         "}</Text>
+                  <Text color="gray">{isFirstLine ? "❯ " : "  "}</Text>
+                  <Text>{leftPart}</Text>
+                  {!disabled && <Text color={isQueryRunning ? "yellow" : "gray"} inverse>{cursorChar}</Text>}
+                  <Text>{rightPart}</Text>
+                  {disabled && <Text dimColor>{" waiting for permission..."}</Text>}
+                  {isQueryRunning && !disabled && value.length === 0 && <Text dimColor color="yellow">{" type to queue a task..."}</Text>}
+                </Box>
+              );
+            }
+
+            return (
+              <Box key={i} paddingLeft={1} paddingRight={1}>
+                <Text color="gray" bold>{isFirstLine ? "nextcode " : "         "}</Text>
+                <Text color="gray">{isFirstLine ? "❯ " : "  "}</Text>
+                <Text>{line}</Text>
+              </Box>
+            );
+          });
+        })()}
+        <Text color="gray">{"─".repeat(process.stdout.columns ?? 80)}</Text>
       </Box>
     </Box>
   );

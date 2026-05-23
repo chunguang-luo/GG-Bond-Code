@@ -70,10 +70,17 @@ def load_settings() -> None:
         _deep_merge(_settings, project_data)
 
     # Layer 3: Environment variables override
+    # Check both ANTHROPIC_API_KEY and NEXTCODE_API_KEY
     if env_key := os.environ.get("NEXTCODE_API_KEY"):
+        _settings["api_key"] = env_key
+    elif env_key := os.environ.get("ANTHROPIC_API_KEY"):
         _settings["api_key"] = env_key
     if env_model := os.environ.get("NEXTCODE_MODEL"):
         _settings["model"] = env_model
+    if env_base_url := os.environ.get("ANTHROPIC_BASE_URL"):
+        _settings["base_url"] = env_base_url
+    elif env_base_url := os.environ.get("NEXT_BASE_URL"):
+        _settings["base_url"] = env_base_url
 
 
 def get_setting(key: str, default: Any = None) -> Any:
