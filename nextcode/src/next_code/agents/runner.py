@@ -88,6 +88,16 @@ async def run_agent(
 
     # ── Phase 4: Context 隔离 ──────────────────────────────────
 
+    # Determine permission mode for background agents
+    bg_no_ask = parent_context.get_state("dangerous_bg_no_ask") or False
+    if is_async and bg_no_ask:
+        # /dangerous-bg-no-ask enabled: auto-approve all tools for background agents
+        bg_permission_mode = "dontAsk"
+        bg_avoid_prompts = False
+    else:
+        bg_permission_mode = agent_def.permission_mode
+        bg_avoid_prompts = is_async  # background agents can't prompt user → auto-deny
+
     agent_context = create_subagent_context(
         parent_context,
         share_abort=(not is_async),
@@ -95,9 +105,9 @@ async def run_agent(
         share_metrics=True,
         agent_id=agent_id,
         agent_type=agent_def.agent_type,
-        permission_mode=agent_def.permission_mode,
+        permission_mode=bg_permission_mode,
         allowed_tools=available_tool_names,
-        avoid_permission_prompts=is_async,
+        avoid_permission_prompts=bg_avoid_prompts,
     )
 
     # Set critical reminder for agents that need per-turn constraint reinforcement
@@ -125,6 +135,7 @@ async def run_agent(
         max_turns=max_turns,
         enable_compaction=False,  # 子 Agent 不做 compaction
         enable_streaming_tools=True,
+        abort_on_permission_deny=is_async,  # 后台 Agent 权限拒绝时立即中断
     )
     # 覆盖 system prompt
     runner.system_prompt = [system_prompt]

@@ -327,6 +327,7 @@ class IPCBridge:
         "agent_start": CoreToInk.AGENT_START.value,
         "agent_result": CoreToInk.AGENT_RESULT.value,
         "agent_progress": CoreToInk.AGENT_PROGRESS.value,
+        "error": CoreToInk.QUERY_ERROR.value,
     }
 
     async def _emit_event(self, event: QueryEvent) -> None:
@@ -655,10 +656,24 @@ class IPCBridge:
                         _poll_tasks._last_count_update = 0.0
                     now = time.monotonic()
                     if now - _poll_tasks._last_count_update > 2.0:
-                        bash_count, agent_count = registry.running_count()
+                        bash_running, agent_running = registry.running_count()
+                        # Count completed (non-evicted) tasks for progress display
+                        bash_done = 0
+                        agent_done = 0
+                        for t in registry.list_all():
+                            if t.is_terminal():
+                                if t.type == TaskType.LOCAL_BASH:
+                                    bash_done += 1
+                                elif t.type == TaskType.LOCAL_AGENT:
+                                    agent_done += 1
                         await self.transport.send_event(
                             CoreToInk.TASK_COUNT.value,
-                            {"bash": bash_count, "agent": agent_count},
+                            {
+                                "bash": bash_running,
+                                "agent": agent_running,
+                                "bash_done": bash_done,
+                                "agent_done": agent_done,
+                            },
                         )
                         _poll_tasks._last_count_update = now
 

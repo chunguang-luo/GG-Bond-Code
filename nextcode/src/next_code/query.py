@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import traceback
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Awaitable
@@ -26,6 +27,8 @@ from .compact.budget import estimate_token_count
 from .memory.session_extract import SessionMemoryState
 from .memory.session_memory import SessionMemoryManager
 from .memory.extract import execute_extract_memories, init_extract_memories
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -56,6 +59,7 @@ class QueryRunner:
         enable_compaction: bool = True,
         max_messages: int = 20,
         enable_streaming_tools: bool = False,
+        abort_on_permission_deny: bool = False,
     ) -> None:
         # Build or use provided context
         if context is not None:
@@ -83,6 +87,7 @@ class QueryRunner:
         ]
         self._recovery_count = 0
         self._enable_streaming_tools = enable_streaming_tools
+        self._abort_on_permission_deny = abort_on_permission_deny
         self._compact_manager = CompactManager(model=self.model, file_cache=self._context.file_cache)
         self._streaming_executor: StreamingToolExecutor | None = None
         self._loop_state = LoopState()
@@ -387,6 +392,11 @@ class QueryRunner:
                     break
 
                 # Execute tools — streaming or serial mode
+                denied_details: list[str] = []
+                # Build id→input lookup from tool_use_blocks for denied tool details
+                tool_input_by_id: dict[str, dict[str, Any]] = {
+                    tb["id"]: tb.get("input", {}) for tb in tool_use_blocks
+                }
                 if self._streaming_executor is not None:
                     # Streaming mode: execute all queued tools with concurrency partitioning
                     # and permission checks
@@ -403,6 +413,10 @@ class QueryRunner:
                         self._streaming_executor = None
 
                     for result in completed:
+                        if result.get("error") and result.get("output") == "Permission denied":
+                            name = result.get("name", "unknown")
+                            inp = tool_input_by_id.get(result.get("id", ""), {})
+                            denied_details.append(_format_tool_call(name, inp))
                         async for event in self._yield_and_append_tool_result(result, messages):
                             yield event
 
@@ -412,15 +426,7 @@ class QueryRunner:
                     self._loop_state.set_transition(TransitionReason.TOOL_COMPLETED, detail=self._format_tool_labels(tool_use_blocks))
                 else:
                     # Serial mode: execute tools one by one with permission checks
-                    # Deduplicate Agent calls: same subagent_type only once per turn
-                    seen_agent_types: set[str] = set()
                     for tb in tool_use_blocks:
-                        if tb.get("name") == "Agent":
-                            sub_type = tb.get("input", {}).get("subagent_type", "general-purpose")
-                            if sub_type in seen_agent_types:
-                                logger.warning("Skipping duplicate Agent: subagent_type=%s", sub_type)
-                                continue
-                            seen_agent_types.add(sub_type)
                         async for event in self._execute_serial_tool(tb, messages):
                             yield event
 
@@ -428,6 +434,18 @@ class QueryRunner:
                     self._maybe_trigger_memory_extraction(messages)
 
                     self._loop_state.set_transition(TransitionReason.TOOL_COMPLETED, detail=self._format_tool_labels(tool_use_blocks))
+
+                # Abort on permission deny for background agents — don't let the
+                # LLM keep retrying denied tools in a loop until timeout.
+                if denied_details and self._abort_on_permission_deny:
+                    detail_lines = "\n".join(f"  - {d}" for d in denied_details)
+                    yield QueryEvent(
+                        type="error",
+                        content=f"权限被拒绝：后台 Agent 无法执行需要用户授权的操作：\n"
+                                f"{detail_lines}\n"
+                                f"请使用前台模式运行此任务，或在设置中预先授权这些工具。",
+                    )
+                    break
 
         finally:
             # Persist messages even if cancelled — use context's set_state
@@ -454,6 +472,10 @@ class QueryRunner:
 
         Returns an empty string if no tasks are running, or a formatted summary
         of completed task results to inject as a user message.
+
+        Does NOT block — only collects results from tasks that have already
+        finished. Running tasks continue in the background and their results
+        can be retrieved later via the TaskOutput tool.
         """
         from .tasks.registry import get_task_registry
         from .tasks.types import TaskType, TaskStatus
@@ -463,41 +485,17 @@ class QueryRunner:
         if not running:
             return ""
 
-        # Collect task IDs to track after waiting
+        # Collect task IDs we're interested in
         running_ids = {task.id for task in running}
 
-        # Collect asyncio tasks to wait for
-        aio_tasks = []
-        for task in running:
-            if task.asyncio_task is not None:
-                aio_tasks.append(task.asyncio_task)
-
-        if aio_tasks:
-            # Wait for all background tasks to complete (max 10 minutes)
-            try:
-                await asyncio.wait(aio_tasks, timeout=600)
-            except asyncio.TimeoutError:
-                self._loop_state.set_transition(
-                    TransitionReason.SURFACE_ERROR,
-                    detail="Background tasks wait timeout (10 min)",
-                )
-            except Exception as e:
-                self._loop_state.set_transition(
-                    TransitionReason.SURFACE_ERROR,
-                    detail=f"Background tasks wait error: {e}",
-                )
-
-        # Collect results from tasks we were waiting for
+        # Check which tasks have already completed (non-blocking)
         parts: list[str] = []
         for task in registry.list_all():
-            # Only collect tasks we were tracking
             if task.id not in running_ids:
                 continue
-
             if not task.is_terminal():
-                parts.append(f"- 任务 {task.id} ({task.type.value}): 仍在运行中")
+                # Still running — don't block, just note it
                 continue
-
             type_label = "Agent" if task.type == TaskType.LOCAL_AGENT else "Shell"
             status = "完成" if task.status == TaskStatus.COMPLETED else f"失败({task.status.value})"
             desc = task.description or (task.command[:80] if hasattr(task, 'command') and task.command else "")
@@ -505,6 +503,7 @@ class QueryRunner:
             parts.append(f"- {type_label} {task.id} ({desc}): {status}\n{result}")
 
         if not parts:
+            # All tasks still running — don't block, let them finish in background
             return ""
 
         return "[后台任务结果]\n" + "\n\n".join(parts) + "\n\n请基于以上后台任务结果继续回答用户的问题。"
@@ -607,3 +606,16 @@ class QueryRunner:
         }
         async for event in self._yield_and_append_tool_result(result_dict, messages):
             yield event
+
+
+def _format_tool_call(name: str, inp: dict[str, Any]) -> str:
+    """Format a tool call with name and key parameters for error messages."""
+    priority_keys = ["file_path", "path", "command", "pattern", "query", "url", "name"]
+    if isinstance(inp, dict):
+        for key in priority_keys:
+            if key in inp:
+                val = str(inp[key])
+                if len(val) > 80:
+                    val = val[:77] + "..."
+                return f"{name}({key}={val})"
+    return name

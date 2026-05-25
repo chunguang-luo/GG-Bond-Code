@@ -270,16 +270,19 @@ export function InputBar({
       {contextInfo && (() => {
         const { tokenUsage, effectiveWindow, warningState } = contextInfo;
         const usedPct = effectiveWindow > 0 ? Math.round((tokenUsage / effectiveWindow) * 100) : 0;
-        const barLen = 20;
+        const barLen = 10;
         const filled = effectiveWindow > 0 ? Math.min(barLen, Math.round(barLen * tokenUsage / effectiveWindow)) : 0;
         const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
-        const fmt = (n: number) => n.toLocaleString();
+        const fmtK = (n: number) => {
+          const k = Math.round(n / 1000);
+          return `${k}k`;
+        };
         const barColor = warningState === "blocking" ? "red" : (warningState === "auto_compact" || warningState === "warning") ? "yellow" : "green";
         return (
           <Box paddingLeft={1}>
             <Text dimColor>{" Context "}</Text>
             <Text color={barColor}>{bar}</Text>
-            <Text dimColor>{` ${fmt(tokenUsage)} / ${fmt(effectiveWindow)} (${usedPct}%)`}</Text>
+            <Text dimColor>{` ${fmtK(tokenUsage)}/${fmtK(effectiveWindow)} (${usedPct}%)`}</Text>
           </Box>
         );
       })()}

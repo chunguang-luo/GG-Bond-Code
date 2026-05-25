@@ -12,8 +12,8 @@ def get_builtin_agents() -> list[AgentDefinition]:
     """返回内置 Agent 列表。"""
     return [
         AgentDefinition(
-            agent_type="general-purpose",
-            name="general-purpose",
+            agent_type="General",
+            name="General",
             description="General-purpose agent for complex, multi-step tasks. "
             "Use when you need to search for a keyword or file, or when you are "
             "not confident that a single, focused sub-agent can handle the task.",

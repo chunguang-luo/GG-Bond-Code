@@ -80,6 +80,11 @@ class PermissionManager:
             if tool is not None and tool.is_read_only(params):
                 return PermissionDecision.ALLOW
 
+        # dontAsk mode: auto-approve anything not explicitly denied
+        # Used by /dangerous-bg-no-ask to let background agents run freely
+        if self._mode == "dontAsk":
+            return PermissionDecision.ALLOW
+
         # Sub-agents that cannot interact with the user should auto-deny
         # instead of asking — otherwise the entire flow blocks on an
         # unanswered permission prompt.

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from typing import Any
 from collections import defaultdict
@@ -32,44 +31,9 @@ from ..tasks.registry import get_task_registry
 
 logger = logging.getLogger(__name__)
 
-# 用于去重：记录正在运行的 agent 任务
-_running_agents: dict[str, list[tuple[str, asyncio.Task]]] = defaultdict(list)
-
-# 相似度阈值：低于此值视为相似任务
-_SIMILARITY_THRESHOLD = 0.6
-
-
-def _compute_prompt_signature(prompt: str) -> tuple[str, set[str]]:
-    """计算 prompt 的签名用于相似度检测。
-
-    Returns:
-        (规范化文本, 关键词集合)
-    """
-    # 规范化：转小写，移除多余空白
-    normalized = re.sub(r"\s+", " ", prompt.lower()).strip()
-    # 提取关键词：字母数字组合
-    words = set(re.findall(r"\b[a-z0-9]{3,}\b", normalized))
-    return normalized, words
-
-
-def _is_similar_prompt(p1: str, p2: str) -> bool:
-    """检测两个 prompt 是否相似（基于关键词重叠度）。
-
-    Returns:
-        True 如果相似度 >= SIMILARITY_THRESHOLD
-    """
-    _, words1 = _compute_prompt_signature(p1)
-    _, words2 = _compute_prompt_signature(p2)
-
-    if not words1 or not words2:
-        return p1.lower().strip() == p2.lower().strip()
-
-    # Jaccard 相似度
-    intersection = len(words1 & words2)
-    union = len(words1 | words2)
-    if union == 0:
-        return False
-    return intersection / union >= _SIMILARITY_THRESHOLD
+# 记录正在运行的 agent 任务，按 (intent, target) 语义 key 去重
+# value: list of (semantic_key, prompt, asyncio.Task)
+_running_agents: dict[str, list[tuple[str, str, asyncio.Task]]] = defaultdict(list)
 
 
 class AgentTool(Tool):
@@ -77,8 +41,9 @@ class AgentTool(Tool):
     description = (
         "启动子 Agent 处理复杂或多步骤任务。"
         "需要搜索关键词或文件时，或不确定单一子 Agent 能否完成任务时，"
-        "使用 general-purpose 类型。"
+        "使用 General 类型。"
         "Explore 用于快速代码库搜索，Plan 用于实现方案规划。"
+        "禁止派发语义等价的 Agent：如果两个 Agent 的目标相同、结果会重叠，不要同时派发。"
         "设置 run_in_background=true 可后台运行子 Agent，主流程会等待所有后台任务完成后继续。"
     )
 
@@ -96,9 +61,27 @@ class AgentTool(Tool):
                         "子 Agent 类型。"
                         "'Explore' 用于快速代码库搜索，"
                         "'Plan' 用于实现方案规划，"
-                        "'general-purpose' 用于复杂多步骤任务。"
+                        "'General' 用于复杂多步骤任务。"
                     ),
-                    "default": "general-purpose",
+                    "default": "General",
+                },
+                "intent": {
+                    "type": "string",
+                    "description": (
+                        "任务意图的标准化标识，用于判断语义等价。"
+                        "用英文蛇形命名，如 search_api、generate_questions、review_code。"
+                        "意图相同 + 目标相同的 Agent 视为重复，会被拒绝执行。"
+                        "例如 '帮我查登录 API' 和 '分析 auth endpoint' 的 intent 都是 search_api。"
+                    ),
+                },
+                "target": {
+                    "type": "string",
+                    "description": (
+                        "任务作用的具体对象，用于判断语义等价。"
+                        "用英文蛇形命名，如 login_api、frontend_arch、team_management。"
+                        "与 intent 组合形成语义 key：相同 intent+target = 重复任务。"
+                        "例如 '查登录 API' 的 target 是 login_api，'查支付 API' 的 target 是 payment_api。"
+                    ),
                 },
                 "description": {
                     "type": "string",
@@ -115,7 +98,7 @@ class AgentTool(Tool):
                     "default": False,
                 },
             },
-            "required": ["prompt"],
+            "required": ["prompt", "intent", "target"],
         }
 
     async def execute(self, params: dict[str, Any]) -> ToolResult:
@@ -124,9 +107,11 @@ class AgentTool(Tool):
             return ToolResult(output="Agent 工具：无法获取上下文", error=True)
 
         prompt = params.get("prompt", "")
-        subagent_type = params.get("subagent_type", "general-purpose")
+        subagent_type = params.get("subagent_type", "General")
         is_background = params.get("run_in_background", False)
         task_description = params.get("description", "")
+        intent = params.get("intent", "")
+        target = params.get("target", "")
 
         # 检查嵌套深度 — 最多允许 2 层嵌套
         # depth=0 主Agent，depth=1 第一层子Agent，depth=2 第二层子Agent
@@ -139,17 +124,19 @@ class AgentTool(Tool):
                 error=True,
             )
 
-        # ── 相似任务检测 ──────────────────────────────────────────
-        if prompt.strip() and subagent_type in _running_agents:
-            for existing_prompt, _ in _running_agents[subagent_type]:
-                if _is_similar_prompt(prompt, existing_prompt):
-                    return ToolResult(
-                        output=f"检测到相似的 {subagent_type} 任务已在运行：\n"
-                               f"  进行中: {existing_prompt[:100]}...\n"
-                               f"  新请求: {prompt[:100]}...\n"
-                               f"请等待当前任务完成或更改任务描述。",
-                        error=True,
-                    )
+        # ── 语义等价去重：相同 intent+target 视为重复任务 ──────────
+        semantic_key = f"{intent}:{target}"
+        if semantic_key and intent and target:
+            for group_key, entries in _running_agents.items():
+                for existing_key, existing_prompt, _ in entries:
+                    if existing_key == semantic_key:
+                        return ToolResult(
+                            output=f"检测到语义等价的任务已在运行（intent={intent}, target={target}）：\n"
+                                   f"  进行中: {existing_prompt[:100]}...\n"
+                                   f"  新请求: {prompt[:100]}...\n"
+                                   f"请等待当前任务完成或更改 target 以区分任务。",
+                            error=True,
+                        )
 
         # 1. 查找 Agent 定义
         cwd = ctx.get_state("cwd") or "."
@@ -164,20 +151,19 @@ class AgentTool(Tool):
 
         # 2. 后台模式 — 注册到 TaskRegistry，异步运行
         if is_background:
-            return self._execute_background(agent_def, prompt, ctx, task_description)
+            return self._execute_background(agent_def, prompt, ctx, task_description, semantic_key)
 
-        # 3. 前台模式 — 实时转发事件 + 收集结果 (10 min timeout)
+        # 3. 前台模式 — 实时转发事件 + 收集结果 (10 min wall-clock timeout)
         emit_ipc = getattr(ctx, "emit_ipc", None)
         logger.info("AgentTool: foreground, emit_ipc=%s, subagent_type=%s",
                      "available" if emit_ipc else "None", subagent_type)
         text_parts: list[str] = []
         tool_use_count = 0
         agent_id = None
-        _FG_TIMEOUT = 600  # seconds
+        _FG_TIMEOUT = 600  # seconds — wall-clock total timeout
 
         # 注册到运行中列表
-        running_key = (subagent_type, prompt)
-        _running_agents[subagent_type].append(running_key)
+        _running_agents[subagent_type].append((semantic_key, prompt, None))
 
         try:
             agent_gen = run_agent(
@@ -186,10 +172,17 @@ class AgentTool(Tool):
                 parent_context=ctx,
                 is_async=False,
             )
+            deadline = time.monotonic() + _FG_TIMEOUT
             while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return ToolResult(
+                        output=f"子 Agent 执行超时（{_FG_TIMEOUT}秒），请简化任务或拆分为更小的子任务",
+                        error=True,
+                    )
                 try:
                     event = await asyncio.wait_for(
-                        agent_gen.__anext__(), timeout=_FG_TIMEOUT,
+                        agent_gen.__anext__(), timeout=remaining,
                     )
                 except StopAsyncIteration:
                     break
@@ -233,8 +226,7 @@ class AgentTool(Tool):
             return ToolResult(output=f"Agent 执行失败: {e}", error=True)
         finally:
             # 从运行中列表移除
-            if running_key in _running_agents.get(subagent_type, []):
-                _running_agents[subagent_type].remove(running_key)
+            _remove_from_running(subagent_type, semantic_key, prompt)
 
         # 3. 提取最终结果 — 返回完整输出给主流程 Agent 使用
         # 前端已通过 emit_ipc 实时显示了子 Agent 的输出
@@ -250,6 +242,7 @@ class AgentTool(Tool):
         prompt: str,
         ctx: Any,
         task_description: str = "",
+        semantic_key: str = "",
     ) -> ToolResult:
         """Run agent in background — register in TaskRegistry, return immediately.
 
@@ -272,43 +265,92 @@ class AgentTool(Tool):
         )
         registry.register(task)
 
-        # Fire-and-forget: run agent in background (10 min timeout)
+        # Fire-and-forget: run agent in background (10 min wall-clock timeout)
         emit_ipc = getattr(ctx, "emit_ipc", None)
-        _TIMEOUT = 600  # seconds
+        _TIMEOUT = 600  # seconds — wall-clock total timeout
 
-        async def _run_and_complete() -> None:
-            text_parts: list[str] = []
-            tool_use_count = 0
-            bg_agent_id = None
-            timed_out = False
-            try:
-                agent_gen = run_agent(
-                    agent_def=agent_def,
-                    prompt=prompt,
-                    parent_context=ctx,
-                    is_async=True,
-                )
-                while True:
+        aio_task = asyncio.create_task(
+            self._run_and_complete(
+                task_id=task_id,
+                agent_def=agent_def,
+                prompt=prompt,
+                ctx=ctx,
+                semantic_key=semantic_key,
+                emit_ipc=emit_ipc,
+                total_timeout=_TIMEOUT,
+            )
+        )
+        task._asyncio_task = aio_task
+
+        # 注册到运行中列表
+        _running_agents[agent_def.agent_type].append((semantic_key, prompt, aio_task))
+
+        return ToolResult(
+            output=f"后台 Agent 已启动 (task_id: {task_id})\n"
+                   f"类型: {agent_def.agent_type}"
+        )
+
+    async def _run_and_complete(
+        self,
+        task_id: str,
+        agent_def: AgentDefinition,
+        prompt: str,
+        ctx: Any,
+        semantic_key: str,
+        emit_ipc: Any,
+        total_timeout: int = 600,
+    ) -> None:
+        """Run agent in background and update task registry on completion.
+
+        Uses a wall-clock deadline for the entire agent run, not per-event
+        timeout, so that long-running agents with many small events are
+        still bounded by a total time limit.
+        """
+        registry = get_task_registry()
+        text_parts: list[str] = []
+        tool_use_count = 0
+        bg_agent_id = None
+        timed_out = False
+        deadline = time.monotonic() + total_timeout
+        logger.info("Background agent %s starting (type=%s, emit_ipc=%s)",
+                     task_id, agent_def.agent_type, "available" if emit_ipc else "None")
+
+        try:
+            agent_gen = run_agent(
+                agent_def=agent_def,
+                prompt=prompt,
+                parent_context=ctx,
+                is_async=True,
+            )
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                try:
+                    event = await asyncio.wait_for(
+                        agent_gen.__anext__(), timeout=remaining,
+                    )
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    break
+                # Forward lifecycle events for frontend display
+                if event.type == "agent_start":
+                    event.metadata["prompt"] = prompt
+                    bg_agent_id = event.metadata.get("agent_id", "")
+                if emit_ipc is not None and event.type in (
+                    "agent_start", "agent_result", "error",
+                ):
                     try:
-                        event = await asyncio.wait_for(
-                            agent_gen.__anext__(), timeout=_TIMEOUT,
-                        )
-                    except StopAsyncIteration:
-                        break
-                    except asyncio.TimeoutError:
-                        timed_out = True
-                        break
-                    # Forward lifecycle events for frontend display
-                    if event.type == "agent_start":
-                        event.metadata["prompt"] = prompt
-                        bg_agent_id = event.metadata.get("agent_id", "")
-                    if emit_ipc is not None and event.type in (
-                        "agent_start", "agent_result",
-                    ):
                         await emit_ipc(event)
-                    if event.type == "tool_use":
-                        tool_use_count += 1
-                        if emit_ipc is not None:
+                    except Exception:
+                        logger.debug("emit_ipc failed for %s event", event.type, exc_info=True)
+                if event.type == "tool_use":
+                    tool_use_count += 1
+                    if emit_ipc is not None:
+                        try:
                             from ..query import QueryEvent
                             await emit_ipc(QueryEvent(
                                 type="agent_progress",
@@ -319,49 +361,44 @@ class AgentTool(Tool):
                                 },
                                 source="agent",
                             ))
-                    if event.type == "text":
-                        text_parts.append(event.content)
-                    elif event.type == "error":
-                        text_parts.append(f"[Error: {event.content}]")
-            except asyncio.CancelledError:
-                registry.update(task_id, status=TaskStatus.KILLED, result="Cancelled")
-                return
-            except Exception as e:
-                registry.update(task_id, status=TaskStatus.FAILED, result=str(e))
-                return
+                        except Exception:
+                            logger.debug("emit_ipc failed for agent_progress", exc_info=True)
+                if event.type == "text":
+                    text_parts.append(event.content)
+                elif event.type == "error":
+                    error_msg = event.content
+                    text_parts.append(f"[Error: {error_msg}]")
+                    # Permission denied — mark task as failed and stop
+                    if "权限被拒绝" in error_msg:
+                        registry.update(task_id, status=TaskStatus.FAILED, result=error_msg)
+                        _remove_from_running(agent_def.agent_type, semantic_key, prompt)
+                        # Close the generator to trigger cleanup
+                        await agent_gen.aclose()
+                        return
+        except asyncio.CancelledError:
+            registry.update(task_id, status=TaskStatus.KILLED, result="Cancelled")
+            _remove_from_running(agent_def.agent_type, semantic_key, prompt)
+            return
+        except Exception as e:
+            registry.update(task_id, status=TaskStatus.FAILED, result=str(e))
+            _remove_from_running(agent_def.agent_type, semantic_key, prompt)
+            return
 
-            if timed_out:
-                registry.update(task_id, status=TaskStatus.FAILED,
-                                result=f"后台 Agent 执行超时（{_TIMEOUT}秒）")
-                return
+        if timed_out:
+            logger.warning("Background agent %s timed out after %ds", task_id, total_timeout)
+            registry.update(task_id, status=TaskStatus.FAILED,
+                            result=f"后台 Agent 执行超时（{total_timeout}秒）")
+            _remove_from_running(agent_def.agent_type, semantic_key, prompt)
+            return
 
-            result = "".join(text_parts).strip() or "Agent completed with no output"
-            registry.update(task_id, status=TaskStatus.COMPLETED, result=result)
-            # 从运行中列表移除
-            for key in list(_running_agents.get(agent_def.agent_type, [])):
-                if key[0] == prompt:
-                    _running_agents[agent_def.agent_type].remove(key)
-                    break
-
-        aio_task = asyncio.create_task(_run_and_complete())
-        task._asyncio_task = aio_task
-        registry.update(task_id)
-
-        # 注册到运行中列表
-        _running_agents[agent_def.agent_type].append((prompt, aio_task))
-
-        return ToolResult(
-            output=f"后台 Agent 已启动 (task_id: {task_id})\n"
-                   f"类型: {agent_def.agent_type}"
-        )
+        result = "".join(text_parts).strip() or "Agent completed with no output"
+        logger.info("Background agent %s completed (type=%s, result_len=%d)",
+                     task_id, agent_def.agent_type, len(result))
+        registry.update(task_id, status=TaskStatus.COMPLETED, result=result)
+        _remove_from_running(agent_def.agent_type, semantic_key, prompt)
 
     def is_concurrency_safe(self, params: dict[str, Any]) -> bool:
-        """不允许并发执行 Agent 工具。
-
-        多个 Agent 并发会导致相同任务重复执行，造成资源浪费。
-        通过 _is_similar_prompt 检测相似任务进行去重。
-        """
-        return False
+        return True
 
     def get_timeout(self) -> float:
         """Agent tool needs more time — sub-agents may run multiple tool calls."""
@@ -374,6 +411,15 @@ class AgentTool(Tool):
         only orchestrates — it doesn't directly edit anything.
         """
         return True
+
+
+def _remove_from_running(agent_type: str, semantic_key: str, prompt: str) -> None:
+    """Remove an entry from the _running_agents dedup list."""
+    entries = _running_agents.get(agent_type, [])
+    for i, (k, p, _) in enumerate(entries):
+        if k == semantic_key and p == prompt:
+            entries.pop(i)
+            break
 
 
 def _find_agent(agents: list[AgentDefinition], agent_type: str) -> AgentDefinition | None:

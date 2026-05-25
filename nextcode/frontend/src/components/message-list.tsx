@@ -335,7 +335,7 @@ function AgentStartItem({ msg }: { msg: DisplayMessage }) {
     _done?: boolean; _finalElapsed?: string;
   } | undefined;
   const rawType = agentMeta?.agent_type || "Agent";
-  const agentType = rawType === "general-purpose" ? rawType : `${rawType} Agent`;
+  const agentType = rawType === "General" ? "General Agent" : `${rawType} Agent`;
   const agentPrompt = agentMeta?.prompt || "";
   const startMs = agentMeta?._startMs || null;
   const toolCount = agentMeta?._tool_use_count || 0;
@@ -548,7 +548,7 @@ function MessageItem({ msg, columns }: { msg: DisplayMessage; columns: number })
     case "agent_result": {
       const resultMeta = msg.metadata as { _elapsed?: string; agent_type?: string; tool_use_count?: number } | undefined;
       const rawType = resultMeta?.agent_type || "Agent";
-      const agentType = rawType === "general-purpose" ? rawType : `${rawType} Agent`;
+      const agentType = rawType === "General" ? "General Agent" : `${rawType} Agent`;
       const elapsed = resultMeta?._elapsed || "";
       const toolCount = resultMeta?.tool_use_count || 0;
       return (

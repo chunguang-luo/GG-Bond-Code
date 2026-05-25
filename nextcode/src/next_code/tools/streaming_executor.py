@@ -15,11 +15,14 @@ Key design:
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .base import ToolRegistry, ToolResult, _current_context
+
+logger = logging.getLogger(__name__)
 
 # Permission decision constants
 PD_ALLOW = "allow"
@@ -107,23 +110,6 @@ class StreamingToolExecutor:
         tool_name = tool_block.get("name", "")
         tool = self.registry.get(tool_name)
         is_safe = tool.is_concurrency_safe(tool_block.get("input", {})) if tool else False
-
-        # Deduplicate Agent calls: same subagent_type only once per turn
-        if tool_name == "Agent":
-            subagent_type = tool_block.get("input", {}).get("subagent_type", "general-purpose")
-            existing_types = set()
-            for ex in self._pending:
-                if ex.tool_name == "Agent":
-                    existing_types.add(ex.input.get("subagent_type", "general-purpose"))
-            for ex in self._completed:
-                if ex.tool_name == "Agent":
-                    existing_types.add(ex.input.get("subagent_type", "general-purpose"))
-            if subagent_type in existing_types:
-                logger.warning(
-                    "Skipping duplicate Agent call: subagent_type=%s already queued/completed",
-                    subagent_type,
-                )
-                return
 
         execution = ToolExecution(
             tool_use_id=tool_block.get("id", ""),

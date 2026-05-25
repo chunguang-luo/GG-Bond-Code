@@ -262,7 +262,7 @@ class TaskRegistry:
     # ── Eviction ─────────────────────────────────────────────────
 
     # How long to keep terminal tasks after notification before eviction (seconds)
-    EVICTION_GRACE_PERIOD = 300.0  # 5 minutes — enough time for TaskOutput queries
+    EVICTION_GRACE_PERIOD = 60.0  # 1 minute — enough time for TaskOutput queries
 
     def evict_terminal(self) -> None:
         """Remove terminal tasks that have been notified and are past the grace period.

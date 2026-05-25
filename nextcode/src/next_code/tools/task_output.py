@@ -15,8 +15,8 @@ class TaskOutputTool(Tool):
     name = "TaskOutput"
     description = (
         "获取后台任务的输出结果。"
-        "重要：后台任务启动后不要立即调用此工具！"
-        "任务完成时会自动通知，到时再用此工具获取结果。"
+        "后台任务完成时会自动收到通知，收到通知后再用此工具获取结果。"
+        "如果任务还在运行中，默认只返回当前状态，不会阻塞等待。"
         "使用 tail_lines 参数可以获取运行中任务的最新输出。"
     )
 
@@ -30,18 +30,18 @@ class TaskOutputTool(Tool):
                 },
                 "block": {
                     "type": "boolean",
-                    "default": True,
-                    "description": "是否阻塞等待任务完成（默认 True）",
+                    "default": False,
+                    "description": "是否阻塞等待任务完成（默认 False，不阻塞）。仅在极少数需要同步等待的场景设为 True。",
                 },
                 "timeout": {
                     "type": "integer",
-                    "default": 300000,
-                    "description": "等待超时时间（毫秒，默认 300000，即 5 分钟）",
+                    "default": 30000,
+                    "description": "阻塞等待超时时间（毫秒，默认 30000，即 30 秒），仅在 block=True 时生效",
                 },
                 "tail_lines": {
                     "type": "integer",
                     "default": 0,
-                    "description": "只返回最后 N 行（0=返回全部），用于轮询运行中任务的最新输出",
+                    "description": "只返回最后 N 行（0=返回全部），用于查看运行中任务的最新输出",
                 },
             },
             "required": ["task_id"],
@@ -61,11 +61,13 @@ class TaskOutputTool(Tool):
 
         # If task is still running and block=True, wait for it
         if task.status == TaskStatus.RUNNING:
-            block = params.get("block", True)
+            block = params.get("block", False)
             if not block:
-                return ToolResult(output=f"任务 {task_id} 仍在运行中")
+                # Non-blocking: return current status immediately
+                desc = task.description or task.command[:80] if hasattr(task, 'command') else ""
+                return ToolResult(output=f"任务 {task_id} 仍在运行中（{desc}）。任务完成后会自动通知，届时再获取结果。")
 
-            timeout_ms = params.get("timeout", 300000)
+            timeout_ms = params.get("timeout", 30000)
             timeout_s = timeout_ms / 1000
 
             # Poll until task reaches terminal state or timeout
@@ -121,3 +123,7 @@ class TaskOutputTool(Tool):
 
     def is_read_only(self, params: dict[str, Any]) -> bool:
         return True  # Only reads task state and output files
+
+    def get_timeout(self) -> float:
+        """TaskOutput may block-wait for task completion — needs longer timeout."""
+        return 60.0  # 1 minute — block mode default is 30s

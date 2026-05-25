@@ -18,7 +18,7 @@ from .guide import build_guide_system_prompt
 _BUILTIN_PROMPTS: dict[str, str] = {
     "Explore": EXPLORE_SYSTEM_PROMPT,
     "Plan": PLAN_SYSTEM_PROMPT,
-    "general-purpose": GENERAL_SYSTEM_PROMPT,
+    "General": GENERAL_SYSTEM_PROMPT,
     "Verification": VERIFICATION_SYSTEM_PROMPT,
 }
 

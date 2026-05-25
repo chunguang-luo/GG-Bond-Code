@@ -73,6 +73,14 @@ function useElapsedTime(startMs: number | null): number {
   return elapsed;
 }
 
+// ── Progress bar helper ────────────────────────────────────────────────────────
+
+function makeBar(done: number, total: number, width = 10): string {
+  if (total <= 0) return "";
+  const filled = Math.round((done / total) * width);
+  return "█".repeat(filled) + "░".repeat(width - filled);
+}
+
 // ── App Component ──────────────────────────────────────────────────────────────
 
 export function App({ transport }: AppProps) {
@@ -96,8 +104,8 @@ export function App({ transport }: AppProps) {
   } | null>(null);
   const [showContextBar, setShowContextBar] = useState(false);
 
-  // Background task tracking: count of running bash/agent tasks
-  const [bgTaskCount, setBgTaskCount] = useState({ bash: 0, agent: 0 });
+  // Background task tracking: count of running + done bash/agent tasks
+  const [bgTaskCount, setBgTaskCount] = useState({ bash: 0, agent: 0, bash_done: 0, agent_done: 0 });
 
   // Real-time task output: task_id -> output lines (for running tasks)
   // Each entry stores the last N lines received for that task
@@ -602,8 +610,8 @@ export function App({ transport }: AppProps) {
         }
 
         case CoreToInk.TASK_COUNT: {
-          const tc = msg.payload as { bash?: number; agent?: number };
-          setBgTaskCount({ bash: tc.bash || 0, agent: tc.agent || 0 });
+          const tc = msg.payload as { bash?: number; agent?: number; bash_done?: number; agent_done?: number };
+          setBgTaskCount({ bash: tc.bash || 0, agent: tc.agent || 0, bash_done: tc.bash_done || 0, agent_done: tc.agent_done || 0 });
           break;
         }
 
@@ -710,11 +718,11 @@ export function App({ transport }: AppProps) {
             }
             return next;
           });
-          if (isQueryRunning) {
-            pendingNotificationsRef.current.push(notification);
-          } else {
-            setMessages((prev) => [...prev, notification]);
-          }
+          // Always show task completion notifications immediately —
+          // background tasks are meant to be non-blocking, so their
+          // results should appear as soon as they finish, even if a
+          // query is still running.
+          setMessages((prev) => [...prev, notification]);
           break;
         }
 
@@ -742,11 +750,8 @@ export function App({ transport }: AppProps) {
             }
             return next;
           });
-          if (isQueryRunning) {
-            pendingNotificationsRef.current.push(notif);
-          } else {
-            setMessages((prev) => [...prev, notif]);
-          }
+          // Always show task notifications immediately
+          setMessages((prev) => [...prev, notif]);
           break;
         }
       }
@@ -895,11 +900,19 @@ export function App({ transport }: AppProps) {
               <Text italic color="yellow">...</Text>
             </>
           )}
-          {(bgTaskCount.bash > 0 || bgTaskCount.agent > 0) && (
+          {(bgTaskCount.bash > 0 || bgTaskCount.agent > 0 || bgTaskCount.bash_done > 0 || bgTaskCount.agent_done > 0) && (
             <Text dimColor> | bg: {[
-              bgTaskCount.bash > 0 && `${bgTaskCount.bash} shell`,
-              bgTaskCount.agent > 0 && `${bgTaskCount.agent} agent`,
-            ].filter(Boolean).join(", ")}</Text>
+              (bgTaskCount.bash > 0 || bgTaskCount.bash_done > 0) && (() => {
+                const total = bgTaskCount.bash + bgTaskCount.bash_done;
+                const bar = makeBar(bgTaskCount.bash_done, total);
+                return `shell ${bar} ${bgTaskCount.bash_done}/${total}`;
+              })(),
+              (bgTaskCount.agent > 0 || bgTaskCount.agent_done > 0) && (() => {
+                const total = bgTaskCount.agent + bgTaskCount.agent_done;
+                const bar = makeBar(bgTaskCount.agent_done, total);
+                return `agent ${bar} ${bgTaskCount.agent_done}/${total}`;
+              })(),
+            ].filter(Boolean).join("  ")}</Text>
           )}
         </Box>
       )}
@@ -919,12 +932,20 @@ export function App({ transport }: AppProps) {
         </Box>
       )}
       {/* Show background task count even when not thinking */}
-      {!isQueryRunning && (bgTaskCount.bash > 0 || bgTaskCount.agent > 0) && (
+      {!isQueryRunning && (bgTaskCount.bash > 0 || bgTaskCount.agent > 0 || bgTaskCount.bash_done > 0 || bgTaskCount.agent_done > 0) && (
         <Box marginTop={0} marginLeft={1}>
           <Text dimColor>bg: {[
-            bgTaskCount.bash > 0 && `${bgTaskCount.bash} shell`,
-            bgTaskCount.agent > 0 && `${bgTaskCount.agent} agent`,
-          ].filter(Boolean).join(", ")}</Text>
+            (bgTaskCount.bash > 0 || bgTaskCount.bash_done > 0) && (() => {
+              const total = bgTaskCount.bash + bgTaskCount.bash_done;
+              const bar = makeBar(bgTaskCount.bash_done, total);
+              return `shell ${bar} ${bgTaskCount.bash_done}/${total}`;
+            })(),
+            (bgTaskCount.agent > 0 || bgTaskCount.agent_done > 0) && (() => {
+              const total = bgTaskCount.agent + bgTaskCount.agent_done;
+              const bar = makeBar(bgTaskCount.agent_done, total);
+              return `agent ${bar} ${bgTaskCount.agent_done}/${total}`;
+            })(),
+          ].filter(Boolean).join("  ")}</Text>
         </Box>
       )}
       {/* Pending questions shown above input bar while a query is running */}
