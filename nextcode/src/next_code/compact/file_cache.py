@@ -72,7 +72,7 @@ class FileStateCache:
         if len(content.encode("utf-8", errors="replace")) > _MAX_CACHEABLE_FILE_SIZE:
             return
 
-        is_partial = offset is not None or limit is not None
+        is_partial = self._is_actually_partial(content, offset, limit)
 
         # Remove old entry if exists (updates position + size)
         if path in self._entries:
@@ -203,6 +203,26 @@ class FileStateCache:
         return len(self._entries)
 
     # ── Internal ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_actually_partial(
+        content: str,
+        offset: int | None,
+        limit: int | None,
+    ) -> bool:
+        """Determine if the read was actually partial.
+
+        If offset and limit were provided but cover the entire file (e.g.
+        offset=0 and limit >= total_lines), it's effectively a full read.
+        """
+        if offset is None and limit is None:
+            return False
+        if offset is not None and offset > 0:
+            return True
+        if limit is None:
+            return False
+        total_lines = content.count("\n") + 1
+        return limit < total_lines
 
     def _evict_if_needed(self) -> None:
         """Evict oldest entries if over limits."""
