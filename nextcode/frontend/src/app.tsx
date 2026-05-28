@@ -96,6 +96,7 @@ export function App({ transport }: AppProps) {
   const [commands, setCommands] = useState<CommandInfo[]>([]);
   const [renderTick, setRenderTick] = useState(0);
   const [showWelcome, setShowWelcome] = useState(true);
+  const [isDisconnected, setIsDisconnected] = useState(false);
 
   // Context bar state: shows compact token usage progress bar above input
   const [contextInfo, setContextInfo] = useState<{
@@ -141,6 +142,8 @@ export function App({ transport }: AppProps) {
 
   // Use ref for currentText to avoid stale closures in onMessage
   const currentTextRef = useRef("");
+  // Separate ref for thinking text — accumulated during thinking phase
+  const thinkingTextRef = useRef("");
   // Track last displayed toolPurpose to avoid duplicates from parallel tool calls
   const lastPurposeRef = useRef("");
   // Queue of user messages submitted while a query is running.
@@ -184,20 +187,41 @@ export function App({ transport }: AppProps) {
 
   // Derive currentText from ref for rendering
   const currentText = currentTextRef.current;
+  const thinkingText = thinkingTextRef.current;
+
+  // Helper: finalize accumulated thinking text into messages
+  const finalizeThinkingText = useCallback(() => {
+    if (thinkingTextRef.current) {
+      const text = thinkingTextRef.current;
+      thinkingTextRef.current = "";
+      setMessages((prev) => [...prev, { id: nextId(), type: "thinking", content: text }]);
+    }
+  }, []);
 
   // Helper: finalize current accumulated text into messages
   const finalizeCurrentText = useCallback(() => {
+    // Finalize any pending thinking first
+    finalizeThinkingText();
     if (currentTextRef.current) {
       const text = currentTextRef.current;
       currentTextRef.current = "";
       setMessages((prev) => [...prev, { id: nextId(), type: "text", content: text }]);
     }
-  }, []);
+  }, [finalizeThinkingText]);
 
   // Helper: finalize accumulated sub-agent text into messages (no-op now — not used)
   const finalizeAgentText = useCallback(() => {}, []);
 
   // ── IPC Message Handler ───────────────────────────────────────────────────
+
+  // Register disconnect handler — show error when backend disconnects
+  useEffect(() => {
+    transport.onDisconnect(() => {
+      setIsDisconnected(true);
+      setIsQueryRunning(false);
+      setQueryStartMs(null);
+    });
+  }, [transport]);
 
   useEffect(() => {
     transport.onMessage((msg: Message) => {
@@ -221,6 +245,10 @@ export function App({ transport }: AppProps) {
         }
 
         case CoreToInk.QUERY_TEXT_DELTA: {
+          // If thinking was being accumulated, finalize it before starting text
+          if (thinkingTextRef.current) {
+            finalizeThinkingText();
+          }
           const text = (msg.payload as { text?: string }).text || "";
           currentTextRef.current += text;
           scheduleFlush();
@@ -229,10 +257,9 @@ export function App({ transport }: AppProps) {
 
         case CoreToInk.QUERY_THINKING_DELTA: {
           const text = (msg.payload as { text?: string }).text || "";
-          if (showThinking) {
-            currentTextRef.current += text;
-            scheduleFlush();
-          }
+          // Always accumulate thinking text (regardless of showThinking toggle)
+          thinkingTextRef.current += text;
+          scheduleFlush();
           break;
         }
 
@@ -905,6 +932,12 @@ export function App({ transport }: AppProps) {
     <Box flexDirection="column" height="100%">
       {showWelcome && <WelcomeScreen model={model} cwd={cwd} />}
       <MessageList messages={messages} currentText={currentText} />
+      {/* Disconnection warning */}
+      {isDisconnected && (
+        <Box marginTop={1} marginLeft={1}>
+          <Text color="red" bold>Connection lost — backend disconnected. Press Ctrl+C to exit.</Text>
+        </Box>
+      )}
       {/* Status bar: shows current activity with elapsed time */}
       {isQueryRunning && queryStartMs !== null && (
         <Box marginTop={0} marginLeft={1}>
@@ -915,9 +948,12 @@ export function App({ transport }: AppProps) {
             </>
           ) : (
             <>
-              <Text italic color="yellow">*thinking </Text>
+              <Text italic color="cyan">*thinking </Text>
               <Text dimColor>{formatElapsed(elapsedSec)}</Text>
-              <Text italic color="yellow">...</Text>
+              {thinkingText && (
+                <Text dimColor color="gray"> {thinkingText.replace(/\n/g, " ").slice(0, 60)}{thinkingText.length > 60 ? "..." : ""}</Text>
+              )}
+              {!thinkingText && <Text italic color="cyan">...</Text>}
             </>
           )}
           {(bgTaskCount.bash > 0 || bgTaskCount.agent > 0 || bgTaskCount.bash_done > 0 || bgTaskCount.agent_done > 0) && (

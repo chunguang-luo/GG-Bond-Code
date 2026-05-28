@@ -14,6 +14,7 @@ export class IPCTransport {
   private socket: net.Socket | null = null;
   private buffer = "";
   private messageHandler: ((msg: Message) => void) | null = null;
+  private _disconnectHandler: (() => void) | null = null;
   private _connected = false;
 
   constructor(private socketPath: string) {}
@@ -24,6 +25,10 @@ export class IPCTransport {
 
   onMessage(handler: (msg: Message) => void): void {
     this.messageHandler = handler;
+  }
+
+  onDisconnect(handler: () => void): void {
+    this._disconnectHandler = handler;
   }
 
   connect(timeout = 10000): Promise<void> {
@@ -49,24 +54,36 @@ export class IPCTransport {
 
       socket.on("close", () => {
         this._connected = false;
+        if (this._disconnectHandler) {
+          this._disconnectHandler();
+        }
       });
 
       socket.on("error", (err) => {
         clearTimeout(timer);
+        const wasConnected = this._connected;
         this._connected = false;
         reject(err);
+        if (wasConnected && this._disconnectHandler) {
+          this._disconnectHandler();
+        }
       });
     });
   }
 
   send(msg: Message): void {
     if (!this.socket || !this._connected) {
-      throw new Error("Not connected");
+      return; // Silently ignore when disconnected — prevents uncaught exceptions
     }
     const data: Record<string, unknown> = { type: msg.type, payload: msg.payload };
     if (msg.id) data.id = msg.id;
     const line = JSON.stringify(data) + "\n";
-    this.socket.write(line, "utf-8");
+    try {
+      this.socket.write(line, "utf-8");
+    } catch {
+      // Socket write can fail if connection dropped between check and write
+      this._connected = false;
+    }
   }
 
   sendEvent(type: string, payload: Record<string, unknown> = {}, id = ""): void {

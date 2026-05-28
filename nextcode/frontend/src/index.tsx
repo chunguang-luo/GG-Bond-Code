@@ -53,14 +53,25 @@ transport
     });
 
     // Render Ink app
-    const { waitUntilExit } = render(
+    const { unmount, waitUntilExit } = render(
       React.createElement(App, { transport })
     );
 
-    // Handle cleanup on exit
-    waitUntilExit().then(() => {
+    // Handle cleanup on exit (both normal and error unmount)
+    waitUntilExit()
+      .then(() => {
+        transport.close();
+        process.exit(0);
+      })
+      .catch(() => {
+        transport.close();
+        process.exit(1);
+      });
+
+    // Graceful shutdown on SIGTERM — let Ink unmount cleanly
+    process.on("SIGTERM", () => {
       transport.close();
-      process.exit(0);
+      unmount();
     });
   })
   .catch((e: Error) => {
@@ -70,10 +81,25 @@ transport
 
 // Handle signals
 process.on("SIGINT", () => {
-  transport.sendEvent("user.interrupt", {});
+  try {
+    transport.sendEvent("user.interrupt", {});
+  } catch {
+    // Disconnected — ignore
+  }
 });
 
-process.on("SIGTERM", () => {
+// Ignore SIGPIPE — prevents crash when stdout pipe breaks
+process.on("SIGPIPE", () => {});
+
+// Global error handlers — prevent uncaught exceptions from crashing the process
+process.on("uncaughtException", (err) => {
+  process.stderr.write(`[NextCode] Uncaught exception: ${err.message}\n`);
   transport.close();
-  process.exit(0);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  process.stderr.write(`[NextCode] Unhandled rejection: ${reason}\n`);
+  // Don't exit on unhandled rejection — just log it
+  // This prevents crash from race conditions in async code
 });
