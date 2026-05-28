@@ -15,7 +15,7 @@ def _on_store_change(key: str, new_value: object, old_value: object) -> None:
     Mirrors Claude Code's onChangeAppState: a single place where state
     changes trigger side-effects (persistence, external notifications).
     """
-    if is_persistable_key(key):
+    if is_persistable_key(key) and new_value != old_value:
         update_setting(key, new_value)
 
 

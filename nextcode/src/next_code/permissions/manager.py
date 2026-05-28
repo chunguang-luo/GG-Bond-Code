@@ -432,12 +432,18 @@ class PermissionManager:
             if tool_name == "Bash":
                 command = params.get("command", "")
                 # Normalize command for matching (strip safe env vars and compound prefix)
-                from ..tools.bash_rule_suggestion import strip_safe_env_vars, strip_compound_prefix
+                from ..tools.bash_rule_suggestion import strip_safe_env_vars, strip_compound_prefix, _split_compound
                 normalized = strip_safe_env_vars(command)
                 normalized = strip_compound_prefix(normalized)
                 from .shell_rules import match_shell_rule
                 if match_shell_rule(rule_content, normalized):
                     return True
+                # Also check each segment of a compound command individually.
+                # e.g. "git add && git commit" should match rule "git commit:*"
+                segments = _split_compound(normalized)
+                for segment in segments:
+                    if match_shell_rule(rule_content, segment):
+                        return True
 
             # Edit/Write: path glob matching
             elif tool_name in ("Edit", "Write"):
@@ -497,7 +503,8 @@ class PermissionManager:
 
                 if suggested_prefix:
                     # Use the prefix as the grant pattern instead of Bash:*
-                    pattern = f"Bash({suggested_prefix}:*)"
+                    # Store in key format (Bash:prefix:*) for _match() compatibility
+                    pattern = f"Bash:{suggested_prefix}:*"
                 else:
                     # Cannot extract a specific prefix — only allow for this session,
                     # do NOT persist Bash:* to settings (too broad)
@@ -534,6 +541,9 @@ class PermissionManager:
 
         Refuses to persist overly broad patterns like Bash:* or Agent:*
         that would effectively bypass the permission system.
+
+        Accepts patterns in key format (Bash:git commit:*) and converts to
+        settings format (Bash(git commit:*)) for storage.
         """
         import logging
         _logger = logging.getLogger(__name__)
@@ -543,13 +553,21 @@ class PermissionManager:
             _logger.warning("Refusing to persist overly broad pattern: %s", pattern)
             return
 
+        # Convert key format to settings format for persistence
+        from .shell_rules import parse_rule_string
+        rule_tool, rule_content = parse_rule_string(pattern)
+        if rule_content is not None:
+            settings_pattern = f"{rule_tool}({rule_content})"
+        else:
+            settings_pattern = pattern
+
         # Read current allow list from settings
         allow_list = list(get_setting("permissions.allow", []))
-        if pattern not in allow_list:
-            allow_list.append(pattern)
+        if settings_pattern not in allow_list:
+            allow_list.append(settings_pattern)
             update_setting("permissions.allow", allow_list)
             # Keep in-memory list in sync
-            self._allowed.append(pattern)
+            self._allowed.append(settings_pattern)
 
     def ask_user(self, tool_name: str, params: dict[str, Any]) -> PermissionDecision:
         """Interactively ask the user for permission. Returns ALLOW or DENY."""
@@ -603,10 +621,22 @@ class PermissionManager:
 
         Unlike filesystem glob, `*` matches any character including `/`,
         since Bash command keys contain paths and arguments with slashes.
+
+        Handles both settings format (Bash(git commit:*)) and key format
+        (Bash:git commit:*) by normalizing via parse_rule_string first.
         """
         import re as _re
+        from .shell_rules import parse_rule_string
+
+        # If pattern is in settings format (with parentheses), normalize to key format
+        rule_tool, rule_content = parse_rule_string(pattern)
+        if rule_content is not None:
+            normalized_pattern = f"{rule_tool}:{rule_content}"
+        else:
+            normalized_pattern = pattern
+
         regex = ""
-        for ch in pattern:
+        for ch in normalized_pattern:
             if ch == "*":
                 regex += ".*"
             elif ch == "?":
