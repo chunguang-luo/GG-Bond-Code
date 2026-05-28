@@ -42,6 +42,10 @@ class IPCBridge:
         self,
         transport: IPCTransport,
         model: str | None = None,
+        *,
+        allowed_tools: str | None = None,
+        disallowed_tools: str | None = None,
+        permission_mode: str | None = None,
     ) -> None:
         self.transport = transport
         self.model = model
@@ -54,6 +58,9 @@ class IPCBridge:
             context=self._context,
             enable_streaming_tools=True,
         )
+
+        # Apply CLI permission configuration
+        self._apply_cli_permissions(allowed_tools, disallowed_tools, permission_mode)
 
         # Command dispatcher
         from ..commands import create_builtin_registry, CommandDispatcher
@@ -102,6 +109,36 @@ class IPCBridge:
     def runner(self) -> QueryRunner:
         return self._runner
 
+    def _apply_cli_permissions(
+        self,
+        allowed_tools: str | None,
+        disallowed_tools: str | None,
+        permission_mode: str | None,
+    ) -> None:
+        """Apply CLI-specified permission configuration to the PermissionManager.
+
+        --allowedTools adds to the allow list for this session.
+        --disallowedTools adds to the deny list for this session.
+        --permission-mode sets the global permission mode.
+        """
+        pm = self._context.permissions
+
+        if allowed_tools:
+            for tool in allowed_tools.split(","):
+                tool = tool.strip()
+                if tool and tool not in pm._session_allowed:
+                    pm._session_allowed.add(tool)
+
+        if disallowed_tools:
+            for tool in disallowed_tools.split(","):
+                tool = tool.strip()
+                if tool and tool not in pm._denied:
+                    pm._denied.append(tool)
+
+        if permission_mode:
+            from ..permissions.modes import PermissionMode
+            pm.mode = PermissionMode(permission_mode)
+
     async def _handle_message(self, msg: Message) -> None:
         """Handle incoming messages from Ink frontend."""
         try:
@@ -130,6 +167,8 @@ class IPCBridge:
                 task_id = msg.payload.get("task_id", "")
                 retain = msg.payload.get("retain", False)
                 await self._handle_task_retain(task_id, retain)
+            elif msg.type == InkToCore.PERMISSION_MODE_CYCLE:
+                await self._handle_permission_mode_cycle()
             else:
                 logger.warning("IPC: unknown message type: %s", msg.type)
         except Exception:
@@ -550,6 +589,21 @@ class IPCBridge:
         else:
             future.set_result(PermissionDecision.DENY)
 
+    async def _handle_permission_mode_cycle(self) -> None:
+        """Handle permission mode cycle from frontend — switch to next mode."""
+        from ..permissions.modes import PermissionMode, get_next_permission_mode
+
+        pm = self._context.permissions
+        current = pm.mode or PermissionMode.DEFAULT
+        next_mode = get_next_permission_mode(current, bypass_available=True)
+        pm.mode = next_mode
+        logger.info("IPC: permission mode cycled to %s", next_mode.value)
+
+        # Notify frontend of the new mode
+        await self.transport.send_event(CoreToInk.PERMISSION_MODE_UPDATE.value, {
+            "mode": next_mode.value,
+        })
+
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
     async def send_welcome(self) -> None:
@@ -666,15 +720,21 @@ class IPCBridge:
                                     bash_done += 1
                                 elif t.type == TaskType.LOCAL_AGENT:
                                     agent_done += 1
-                        await self.transport.send_event(
-                            CoreToInk.TASK_COUNT.value,
-                            {
-                                "bash": bash_running,
-                                "agent": agent_running,
-                                "bash_done": bash_done,
-                                "agent_done": agent_done,
-                            },
-                        )
+                        # Skip sending if counts haven't changed
+                        new_counts = (bash_running, agent_running, bash_done, agent_done)
+                        if not hasattr(_poll_tasks, "_last_counts"):
+                            _poll_tasks._last_counts = None
+                        if new_counts != _poll_tasks._last_counts:
+                            _poll_tasks._last_counts = new_counts
+                            await self.transport.send_event(
+                                CoreToInk.TASK_COUNT.value,
+                                {
+                                    "bash": bash_running,
+                                    "agent": agent_running,
+                                    "bash_done": bash_done,
+                                    "agent_done": agent_done,
+                                },
+                            )
                         _poll_tasks._last_count_update = now
 
                     # Announce newly started tasks

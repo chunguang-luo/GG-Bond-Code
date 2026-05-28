@@ -43,6 +43,7 @@ class CoreToInk(str, Enum):
 
     # Permission
     PERMISSION_REQUEST = "permission.request"
+    PERMISSION_MODE_UPDATE = "permission.mode_update"
 
     # Context info
     CONTEXT_INFO = "context.info"
@@ -95,6 +96,7 @@ class InkToCore(str, Enum):
 
     # Permission response
     PERMISSION_RESPONSE = "permission.response"
+    PERMISSION_MODE_CYCLE = "permission.mode_cycle"
 
     # UI state
     UI_TOGGLE_THINKING = "ui.toggle_thinking"
