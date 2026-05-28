@@ -12,15 +12,22 @@ from pathlib import Path
 def resolve_api_key() -> str | None:
     """Resolve API key based on current model.
 
-    - claude-* → ANTHROPIC_API_KEY env → settings api_key
-    - deepseek-* / glm-* → NEXTCODE_API_KEY env → settings api_key
-    - unknown  → try both env vars, but warn about model name
+    Priority: settings (including env section) > os.environ.
+    - claude-* / minimax-* → settings.api_key → ANTHROPIC_API_KEY env
+    - deepseek-* / glm-* / gpt-* → settings.api_key → NEXTCODE_API_KEY env
+    - unknown  → settings.api_key → try both env vars, warn about model name
     """
     import logging
     from ..api.client import _model_family
 
     logger = logging.getLogger(__name__)
 
+    # Settings (including env section) always take priority
+    key = get_setting("api_key", "")
+    if key:
+        return key
+
+    # Fall back to os.environ
     model = get_setting("model", "")
     family = _model_family(model)
 
@@ -38,9 +45,6 @@ def resolve_api_key() -> str | None:
                 "or ~/.nextcode/.settings.json.",
                 model,
             )
-
-    if not key:
-        key = get_setting("api_key", "")
 
     return key or None
 

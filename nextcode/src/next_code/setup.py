@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from .state.store import Store, reset_store
-from .config.settings import get_setting, is_persistable_key, update_setting
+from .config.settings import get_setting, is_persistable_key, update_setting, load_settings
 
 
 def _on_store_change(key: str, new_value: object, old_value: object) -> None:
@@ -38,10 +38,13 @@ def setup(cwd: str, model: str | None = None) -> None:
     project_root = _find_project_root(cwd)
     store.set("project_root", project_root)
 
-    # 4. Initialize conversation history
+    # 4. Reload settings now that project_root is set (ensures project config is loaded)
+    load_settings()
+
+    # 5. Initialize conversation history
     store.set("messages", [])
 
-    # 5. Record session start time
+    # 6. Record session start time
     import time
     store.set("session_start", time.time())
 

@@ -75,7 +75,14 @@ class QueryRunner:
 
         ctx = self._context
         self.model = model or ctx.get_state("model")
-        self.family = get_model_family(self.model) or "openai"
+        # Determine family: use api_protocol from settings (detected from base_url),
+        # otherwise infer from model name prefix
+        from .config.settings import get_setting
+        api_protocol = get_setting("api_protocol", "")
+        if api_protocol:
+            self.family = api_protocol
+        else:
+            self.family = get_model_family(self.model) or "openai"
         self.max_turns = max_turns
         self.system_prompt = build_system_prompt(cwd=ctx.get_state("cwd"))
         self._permission_callback = permission_callback

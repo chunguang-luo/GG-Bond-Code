@@ -66,7 +66,17 @@ class SurfaceErrorRecovery(RecoveryStrategy):
         error: Exception,
         recovery_count: int,
     ) -> bool:
-        """Always recover from surface errors."""
+        """Recover from surface errors, but NOT from client errors (4xx).
+
+        4xx errors (401, 403, 404, etc.) indicate a fundamental problem
+        (wrong URL, bad auth, wrong protocol) that retrying won't fix.
+        These should be surfaced as errors, not recovered from.
+        """
+        # Don't recover from HTTP client errors — these are permanent
+        status_code = getattr(error, "status_code", None)
+        if status_code is not None and 400 <= status_code < 500:
+            return False
+
         error_message = str(error).lower()
         return "error" in error_message and "internal" not in error_message
 
