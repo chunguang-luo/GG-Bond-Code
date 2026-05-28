@@ -1,0 +1,1 @@
+"""Permission system — mirrors Claude Code's permissions/ module."""
