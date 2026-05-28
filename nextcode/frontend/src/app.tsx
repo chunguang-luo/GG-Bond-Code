@@ -92,6 +92,7 @@ export function App({ transport }: AppProps) {
   const [showThinking, setShowThinking] = useState(false);
   const [model, setModel] = useState("unknown");
   const [cwd, setCwd] = useState("unknown");
+  const [permissionMode, setPermissionMode] = useState<string>("default");
   const [commands, setCommands] = useState<CommandInfo[]>([]);
   const [renderTick, setRenderTick] = useState(0);
   const [showWelcome, setShowWelcome] = useState(true);
@@ -593,6 +594,12 @@ export function App({ transport }: AppProps) {
           break;
         }
 
+        case CoreToInk.PERMISSION_MODE_UPDATE: {
+          const modePayload = msg.payload as { mode?: string };
+          setPermissionMode(modePayload.mode || "default");
+          break;
+        }
+
         case CoreToInk.STATE_UPDATE: {
           // TODO: handle state updates
           break;
@@ -611,7 +618,16 @@ export function App({ transport }: AppProps) {
 
         case CoreToInk.TASK_COUNT: {
           const tc = msg.payload as { bash?: number; agent?: number; bash_done?: number; agent_done?: number };
-          setBgTaskCount({ bash: tc.bash || 0, agent: tc.agent || 0, bash_done: tc.bash_done || 0, agent_done: tc.agent_done || 0 });
+          const bash = tc.bash || 0;
+          const agent = tc.agent || 0;
+          const bash_done = tc.bash_done || 0;
+          const agent_done = tc.agent_done || 0;
+          setBgTaskCount((prev) => {
+            if (prev.bash === bash && prev.agent === agent && prev.bash_done === bash_done && prev.agent_done === agent_done) {
+              return prev;
+            }
+            return { bash, agent, bash_done, agent_done };
+          });
           break;
         }
 
@@ -836,6 +852,10 @@ export function App({ transport }: AppProps) {
     [transport, permissionRequest]
   );
 
+  const handlePermissionModeCycle = useCallback(() => {
+    transport.sendEvent(InkToCore.PERMISSION_MODE_CYCLE, {});
+  }, [transport]);
+
   // ── Task control handlers ────────────────────────────────────────────────
 
   const handleTaskStop = useCallback(
@@ -977,6 +997,8 @@ export function App({ transport }: AppProps) {
           model={model}
           commands={commands}
           contextInfo={showContextBar ? contextInfo : null}
+          permissionMode={permissionMode}
+          onPermissionModeCycle={handlePermissionModeCycle}
         />
       )}
     </Box>

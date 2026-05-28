@@ -55,6 +55,8 @@ interface InputBarProps {
   model?: string;
   commands?: CommandInfo[];
   contextInfo?: ContextBarInfo | null;
+  permissionMode?: string;
+  onPermissionModeCycle?: () => void;
 }
 
 export function InputBar({
@@ -66,6 +68,8 @@ export function InputBar({
   model,
   commands = [],
   contextInfo,
+  permissionMode,
+  onPermissionModeCycle,
 }: InputBarProps) {
   // Build a flat list of all command names + aliases for Tab completion
   const allCommandNames = useMemo(() => {
@@ -114,6 +118,11 @@ export function InputBar({
 
   useInput(
     (input, key) => {
+      // Shift+Tab: cycle permission mode
+      if (key.tab && key.shift && onPermissionModeCycle) {
+        onPermissionModeCycle();
+        return;
+      }
       // Option+Enter (macOS): \x1b\r → key.meta=true, input='\r'
       // Shift+Enter (kitty): \x1b[13;2u → parsed by fnKeyRe, key.shift=true
       if ((key.meta && input === "\r") || (key.shift && key.return)) {
@@ -325,6 +334,27 @@ export function InputBar({
         })()}
         <Text color="gray">{"─".repeat(process.stdout.columns ?? 80)}</Text>
       </Box>
+      {/* Permission mode indicator */}
+      {permissionMode && permissionMode !== "default" && (
+        <Box paddingLeft={1}>
+          <Text dimColor>
+            {permissionMode === "acceptEdits"
+              ? "⏵⏵ accept edits — auto allows working dir edits"
+              : permissionMode === "plan"
+                ? "📖 plan mode — read only, asks before writes"
+                : permissionMode === "bypassPermissions"
+                  ? "⚡ bypass permissions — skip most prompts"
+                  : permissionMode}
+            {" (shift+tab to cycle)"}
+          </Text>
+        </Box>
+      )}
+      {/* Permission mode indicator when in default mode */}
+      {(!permissionMode || permissionMode === "default") && (
+        <Box paddingLeft={1}>
+          <Text dimColor>⏹ default — asks before writes (shift+tab to cycle)</Text>
+        </Box>
+      )}
     </Box>
   );
 }

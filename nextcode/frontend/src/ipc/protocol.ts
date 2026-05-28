@@ -34,6 +34,7 @@ export const CoreToInk = {
 
   // Permission
   PERMISSION_REQUEST: "permission.request",
+  PERMISSION_MODE_UPDATE: "permission.mode_update",
 
   // Context
   CONTEXT_INFO: "context.info",
@@ -82,6 +83,7 @@ export const InkToCore = {
   USER_INTERRUPT: "user.interrupt",
   USER_COMMAND: "user.command",
   PERMISSION_RESPONSE: "permission.response",
+  PERMISSION_MODE_CYCLE: "permission.mode_cycle",
   UI_TOGGLE_THINKING: "ui.toggle_thinking",
   UI_RESIZE: "ui.resize",
   THEME_CHANGE: "theme.change",
@@ -138,6 +140,10 @@ export interface PermissionRequestPayload {
   requestId: string;
   toolName: string;
   params: Record<string, unknown>;
+}
+
+export interface PermissionModeUpdatePayload {
+  mode: string;
 }
 
 export interface PermissionResponsePayload {
