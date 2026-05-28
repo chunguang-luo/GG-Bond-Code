@@ -114,3 +114,69 @@ def test_specific_grant_does_not_persist():
 
             # But session-allowed has it
             assert "Bash:ls" in pm._session_allowed
+
+
+def test_compound_command_grants_all_segments():
+    """Wildcard grant on a compound command (&&) persists rules for each meaningful segment."""
+    with patch("next_code.permissions.manager.update_setting") as mock_update:
+        with patch("next_code.permissions.manager.get_setting", return_value=[]):
+            pm = PermissionManager()
+            result = pm.grant_session("Bash", {"command": "git add . && git commit -m 'fix'"}, wildcard=True)
+
+            # Should return both prefixes
+            assert "git commit" in result
+            assert "git add" in result
+            assert len(result) == 2
+
+            # Both patterns should be persisted
+            calls = mock_update.call_args_list
+            persisted = []
+            for call in calls:
+                persisted.extend(call[0][1])
+            assert "Bash(git add:*)" in persisted
+            assert "Bash(git commit:*)" in persisted
+
+
+def test_compound_command_three_segments():
+    """Three-segment compound command persists rules for all meaningful segments."""
+    with patch("next_code.permissions.manager.update_setting") as mock_update:
+        with patch("next_code.permissions.manager.get_setting", return_value=[]):
+            pm = PermissionManager()
+            result = pm.grant_session(
+                "Bash",
+                {"command": "cd /tmp && npm run build && npm run test"},
+                wildcard=True,
+            )
+
+            # get_command_prefix returns last meaningful prefix: "npm run"
+            # _extract_prefix_single on segments: "cd /tmp" -> None (cd is setup),
+            # "npm run build" -> "npm run", "npm run test" -> "npm run"
+            # So we get "npm run" from get_command_prefix and one more from segments
+            assert "npm run" in result
+
+            # Both patterns should be in session_allowed
+            assert "Bash:npm run:*" in pm._session_allowed
+
+
+def test_compound_command_skip_setup_segments():
+    """Setup commands (cd, source) in compound commands don't get their own rules."""
+    with patch("next_code.permissions.manager.update_setting") as mock_update:
+        with patch("next_code.permissions.manager.get_setting", return_value=[]):
+            pm = PermissionManager()
+            result = pm.grant_session("Bash", {"command": "cd /tmp && ls"}, wildcard=True)
+
+            # "cd /tmp" yields no prefix (cd is setup), "ls" has no subcommand
+            # get_command_prefix returns None for "ls" (single token)
+            # So result should be empty
+            assert result == []
+
+
+def test_non_compound_single_prefix():
+    """Non-compound command still works as before — returns single prefix."""
+    with patch("next_code.permissions.manager.update_setting") as mock_update:
+        with patch("next_code.permissions.manager.get_setting", return_value=[]):
+            pm = PermissionManager()
+            result = pm.grant_session("Bash", {"command": "git commit -m 'fix'"}, wildcard=True)
+
+            assert result == ["git commit"]
+            mock_update.assert_called_once_with("permissions.allow", ["Bash(git commit:*)"])
