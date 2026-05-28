@@ -17,6 +17,7 @@ _DEFAULTS: dict[str, Any] = {
     "permissions": {
         "allow": [],
         "deny": [],
+        "ask": [],
     },
     "context": {
         "max_tokens": 65536,
@@ -140,8 +141,17 @@ def _persist_to_project(key: str, value: Any) -> None:
     from ..state.store import Store
     project_root = Store().get("project_root", str(Path.cwd()))
     project_path = Path(project_root) / ".nextcode" / ".settings.json"
-    logger.info("Persisting %s to %s (project_root=%s)", key, project_path, project_root)
+
+    # Load existing data and skip write if value hasn't changed
     data = _load_json(project_path)
+    existing = data
+    for part in key.split(".")[:-1]:
+        existing = existing.get(part, {})
+    last_key = key.split(".")[-1]
+    if existing.get(last_key) == value:
+        return  # No change, skip write
+
+    logger.info("Persisting %s to %s (project_root=%s)", key, project_path, project_root)
     _set_nested(data, key, value)
     _save_json(project_path, data)
 

@@ -15,9 +15,15 @@ from .init import init
 @click.option("--print", "print_mode", is_flag=True, help="Non-interactive mode (read from stdin).")
 @click.option("--model", default=None, help="Model to use.")
 @click.option("--cwd", default=None, help="Working directory.")
+@click.option("--allowed-tools", "allowed_tools", default=None, help="Comma-separated list of allowed tools.")
+@click.option("--disallowed-tools", "disallowed_tools", default=None, help="Comma-separated list of disallowed tools.")
+@click.option("--permission-mode", "permission_mode", default=None,
+              type=click.Choice(["default", "plan", "acceptEdits", "bypassPermissions", "dontAsk"]),
+              help="Permission mode for this session.")
 @click.pass_context
 def cli(ctx: click.Context, version: bool, print_mode: bool, model: str | None,
-        cwd: str | None) -> None:
+        cwd: str | None, allowed_tools: str | None, disallowed_tools: str | None,
+        permission_mode: str | None) -> None:
     """NextCode — AI-powered CLI assistant."""
     ctx.ensure_object(dict)
 
@@ -33,6 +39,9 @@ def cli(ctx: click.Context, version: bool, print_mode: bool, model: str | None,
     ctx.obj["model"] = model
     ctx.obj["cwd"] = cwd or str(Path.cwd())
     ctx.obj["print_mode"] = print_mode
+    ctx.obj["allowed_tools"] = allowed_tools
+    ctx.obj["disallowed_tools"] = disallowed_tools
+    ctx.obj["permission_mode"] = permission_mode
 
     # If no sub-command, launch interactive REPL
     if ctx.invoked_subcommand is None:
@@ -64,7 +73,13 @@ async def _run_interactive(ctx: click.Context) -> None:
 
     transport = IPCTransport()
     launcher = InkLauncher(socket_path=transport.socket_path)
-    bridge = IPCBridge(transport=transport, model=ctx.obj["model"])
+    bridge = IPCBridge(
+        transport=transport,
+        model=ctx.obj["model"],
+        allowed_tools=ctx.obj.get("allowed_tools"),
+        disallowed_tools=ctx.obj.get("disallowed_tools"),
+        permission_mode=ctx.obj.get("permission_mode"),
+    )
 
     try:
         # 1. Start IPC transport
