@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from ..permissions.manager import PermissionManager
@@ -97,11 +98,16 @@ def create_store_context(
         from ..tools.base import create_default_registry
         registry = create_default_registry()
 
+    pm = permissions or PermissionManager()
+    # Set working directory from store for path-based permission checks
+    project_root = store.get("project_root", str(Path.cwd())) if store else str(Path.cwd())
+    pm.cwd = project_root
+
     return ToolUseContext(
         get_state=store.get,
         set_state=store.set,
         set_state_for_tasks=store.set,
-        permissions=permissions or PermissionManager(),
+        permissions=pm,
         registry=registry,
     )
 
@@ -193,6 +199,12 @@ def _wrap_permissions(
     wrapped._allowed = list(parent._allowed)
     wrapped._denied = list(parent._denied)
     wrapped._ask_rules = list(parent._ask_rules)
+
+    # Inherit working directory for path checks
+    wrapped.cwd = parent.cwd
+
+    # Sub-agents that can't prompt the user are headless
+    wrapped.is_headless = avoid_prompts
 
     if allowed_tools is not None:
         wrapped.set_session_allowed_tools(allowed_tools)
