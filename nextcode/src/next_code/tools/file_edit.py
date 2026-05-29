@@ -68,9 +68,25 @@ class FileEditTool(Tool):
         }
 
     async def execute(self, params: dict[str, Any]) -> ToolResult:
-        file_path = Path(params["file_path"])
-        old_string = params["old_string"]
-        new_string = params["new_string"]
+        file_path_str = params.get("file_path")
+        old_string = params.get("old_string")
+        new_string = params.get("new_string")
+        if not file_path_str:
+            return ToolResult(
+                output="Edit 工具缺少 file_path 参数，请确保提供了要编辑的文件绝对路径",
+                error=True,
+            )
+        if old_string is None:
+            return ToolResult(
+                output="Edit 工具缺少 old_string 参数，请确保提供了要替换的原文本",
+                error=True,
+            )
+        if new_string is None:
+            return ToolResult(
+                output="Edit 工具缺少 new_string 参数，请确保提供了替换后的新文本",
+                error=True,
+            )
+        file_path = Path(file_path_str)
         replace_all = params.get("replace_all", False)
 
         if not file_path.exists():

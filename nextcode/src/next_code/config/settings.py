@@ -28,6 +28,7 @@ _DEFAULTS: dict[str, Any] = {
     "api_key": "",
     "model": "",
     "base_url": "",
+    "api_protocol": "",
     "permissions": {
         "allow": [],
         "deny": [],
@@ -81,8 +82,12 @@ def _load_json(path: Path) -> tuple[dict[str, Any], list[str]]:
 
         return data, warnings
     except OSError as e:
-        logger.warning("Failed to read settings from %s: %s", path, e)
-        warnings.append(f"Failed to read {path}: {e}")
+        if not path.exists():
+            # File not found is normal (e.g. first run, no global config) — debug only
+            logger.debug("No settings file at %s", path)
+        else:
+            logger.warning("Failed to read settings from %s: %s", path, e)
+            warnings.append(f"Failed to read {path}: {e}")
         return {}, warnings
     except json.JSONDecodeError as e:
         logger.error("Corrupted JSON in %s: %s", path, e)
@@ -129,8 +134,14 @@ def load_settings(*, source: str = "default") -> list[str]:
         if project_data:
             _deep_merge(_settings, project_data, source="project")
 
-    # Layer 3: Environment variables override
+    # Layer 3: Apply env from settings file (these will be overridden by actual env vars)
+    _apply_settings_env()
+
+    # Layer 4: Environment variables override
     _apply_env_overrides()
+
+    # Layer 5: Detect API protocol from base_url or model name
+    _detect_api_protocol()
 
     # Print warnings for user attention
     if all_warnings:
@@ -140,17 +151,119 @@ def load_settings(*, source: str = "default") -> list[str]:
 
 
 def _apply_env_overrides() -> None:
-    """Apply environment variable overrides to settings."""
-    if env_key := os.environ.get("NEXTCODE_API_KEY"):
-        _settings["api_key"] = env_key
-    elif env_key := os.environ.get("ANTHROPIC_API_KEY"):
-        _settings["api_key"] = env_key
-    if env_model := os.environ.get("NEXTCODE_MODEL"):
-        _settings["model"] = env_model
-    if env_base_url := os.environ.get("ANTHROPIC_BASE_URL"):
-        _settings["base_url"] = env_base_url
-    elif env_base_url := os.environ.get("NEXT_BASE_URL"):
-        _settings["base_url"] = env_base_url
+    """Apply os.environ to settings only when settings.env didn't already provide it.
+
+    Priority: settings.env > os.environ
+    """
+    # Apply os.environ when the current setting is empty/falsy.
+    # We can't use setdefault() because _DEFAULTS sets api_key="" etc.
+    # and setdefault won't overwrite an existing (but empty) key.
+    if not _settings.get("api_key"):
+        if env_key := os.environ.get("NEXTCODE_API_KEY"):
+            _settings["api_key"] = env_key
+        elif env_key := os.environ.get("ANTHROPIC_API_KEY"):
+            _settings["api_key"] = env_key
+        elif env_key := os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+            _settings["api_key"] = env_key
+
+    if not _settings.get("model"):
+        if env_model := os.environ.get("NEXTCODE_MODEL"):
+            _settings["model"] = env_model
+        elif env_model := os.environ.get("ANTHROPIC_MODEL"):
+            _settings["model"] = env_model
+
+    if not _settings.get("base_url"):
+        if env_base_url := os.environ.get("ANTHROPIC_BASE_URL"):
+            _settings["base_url"] = env_base_url
+        elif env_base_url := os.environ.get("NEXT_BASE_URL"):
+            _settings["base_url"] = env_base_url
+
+
+def _apply_settings_env() -> None:
+    """Apply env section from settings file to settings.
+
+    These values have highest priority (override os.environ).
+    Priority: settings.env > os.environ > defaults
+    """
+    env_config = _settings.get("env")
+    if not env_config or not isinstance(env_config, dict):
+        return
+
+    # Map env keys to settings keys
+    env_to_setting = {
+        "ANTHROPIC_API_KEY": "api_key",
+        "ANTHROPIC_MODEL": "model",
+        "ANTHROPIC_BASE_URL": "base_url",
+        "ANTHROPIC_AUTH_TOKEN": "api_key",
+        "NEXTCODE_API_KEY": "api_key",
+        "NEXTCODE_MODEL": "model",
+        "NEXT_BASE_URL": "base_url",
+    }
+
+    for key, value in env_config.items():
+        setting_key = env_to_setting.get(key)
+        if setting_key:
+            _settings[setting_key] = value
+            logger.debug("Applied env from settings: %s -> %s", key, setting_key)
+
+
+def _detect_api_protocol() -> None:
+    """Detect API protocol based on base_url, env key prefixes, or model name.
+
+    Priority:
+    1. base_url contains "/anthropic" → anthropic
+    2. env keys start with "ANTHROPIC_" → anthropic
+    3. env keys start with "NEXTCODE_" → openai
+    4. model name prefix (claude- → anthropic, deepseek- → openai, etc.)
+    """
+    base_url = _settings.get("base_url", "")
+
+    # Priority 1: URL contains "/anthropic"
+    if base_url and "/anthropic" in base_url:
+        _settings["api_protocol"] = "anthropic"
+        logger.debug("Detected /anthropic in base_url → api_protocol=anthropic")
+        return
+
+    # Priority 2 & 3: env key prefixes
+    env_config = _settings.get("env")
+    if env_config and isinstance(env_config, dict):
+        has_anthropic_env = any(k.startswith("ANTHROPIC_") for k in env_config if env_config.get(k))
+        has_openai_env = any(k.startswith("NEXTCODE_") for k in env_config if env_config.get(k))
+        if has_anthropic_env and not has_openai_env:
+            _settings["api_protocol"] = "anthropic"
+            logger.debug("Detected ANTHROPIC_* env keys → api_protocol=anthropic")
+            return
+        if has_openai_env and not has_anthropic_env:
+            _settings["api_protocol"] = "openai"
+            logger.debug("Detected NEXTCODE_* env keys → api_protocol=openai")
+            return
+
+    # Priority 4: model name prefix
+    model = _settings.get("model", "")
+    family = _model_family_for_protocol(model)
+    if family:
+        _settings["api_protocol"] = family
+        logger.debug("Inferred api_protocol=%s from model name '%s'", family, model)
+
+
+# Model name prefixes for protocol detection (mirrors api/client.py)
+_ANTHROPIC_PREFIXES = ("claude-", "minimax-")
+_OPENAI_PREFIXES = (
+    "deepseek-", "glm-", "gpt-", "o1-", "o3-", "o4-",
+    "qwen-", "llama-", "gemini-", "mistral-", "yi-",
+)
+
+
+def _model_family_for_protocol(model: str) -> str | None:
+    """Return 'anthropic' or 'openai' based on model name prefix."""
+    lower = model.lower()
+    for p in _ANTHROPIC_PREFIXES:
+        if lower.startswith(p):
+            return "anthropic"
+    for p in _OPENAI_PREFIXES:
+        if lower.startswith(p):
+            return "openai"
+    return None
 
 
 def get_setting(key: str, default: Any = None) -> Any:

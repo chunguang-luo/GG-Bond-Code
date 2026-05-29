@@ -74,7 +74,12 @@ class BashTool(Tool):
         return check_read_only_constraints(command)
 
     async def execute(self, params: dict[str, Any]) -> ToolResult:
-        command = params["command"]
+        command = params.get("command")
+        if not command:
+            return ToolResult(
+                output="Bash 工具缺少 command 参数，请确保提供了要执行的命令",
+                error=True,
+            )
         timeout_ms = params.get("timeout", 120000)
         run_in_background = params.get("run_in_background", False)
         task_description = params.get("description", "")

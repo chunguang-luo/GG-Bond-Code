@@ -171,15 +171,18 @@ async def _retry_stream(
 # ── OpenAI-compatible client ────────────────────────────────────────
 
 def _get_openai_client() -> Any:
-    """Get or create an OpenAI-compatible async client."""
+    """Get or create an OpenAI-compatible async client.
+
+    Priority: settings (including env section) > os.environ.
+    """
     import os
     from ..config.settings import get_setting
 
     api_key = resolve_api_key()
     base_url = (
-        os.environ.get("NEXT_BASE_URL")
+        get_setting("base_url")
+        or os.environ.get("NEXT_BASE_URL")
         or os.environ.get("NEXTCODE_BASE_URL")
-        or get_setting("base_url")
     )
 
     from openai import AsyncOpenAI
@@ -304,22 +307,30 @@ def _to_openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _get_anthropic_client() -> Any:
     """Get or create an Anthropic async client.
 
-    Uses ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / NEXT_BASE_URL env vars
-    automatically. Falls back to settings if env vars not set.
+    Priority: settings (including env section) > os.environ.
     """
     import os
     import anthropic
 
     from ..config.settings import get_setting
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY") or resolve_api_key()
+    api_key = resolve_api_key()
     base_url = (
-        os.environ.get("ANTHROPIC_BASE_URL")
+        get_setting("base_url")
+        or os.environ.get("ANTHROPIC_BASE_URL")
         or os.environ.get("NEXT_BASE_URL")
-        or get_setting("base_url")
     )
 
-    return anthropic.AsyncAnthropic(api_key=api_key, base_url=base_url)
+    # Some Anthropic-compatible providers require the API key in the
+    # "X-Api-Key" header (capitalized) instead of the SDK's default
+    # "x-api-key". Send both headers to maximize compatibility.
+    default_headers: dict[str, str] = {"X-Api-Key": api_key or ""}
+
+    return anthropic.AsyncAnthropic(
+        api_key=api_key,
+        base_url=base_url,
+        default_headers=default_headers,
+    )
 
 
 async def _stream_anthropic_inner(
@@ -446,14 +457,12 @@ async def stream_message(
         max_tokens = get_setting("context.max_tokens", 8192)
 
     family = _model_family(model)
-    if family is None:
-        raise ValueError(
-            f"Unknown model: '{model}'. "
-            f"Model name must start with a known prefix: "
-            f"claude- (Anthropic), deepseek- or glm- (OpenAI-compatible). "
-            f"Please configure a valid model name via --model, NEXTCODE_MODEL, "
-            f"or ~/.nextcode/.settings.json (e.g. {{\"model\": \"deepseek-chat\"}})."
-        )
+
+    # Override family based on api_protocol detected from base_url.
+    # If base_url contains "/anthropic", use Anthropic protocol regardless of model name.
+    api_protocol = get_setting("api_protocol", "")
+    if api_protocol:
+        family = api_protocol
     # Clamp to model-specific max output limit
     from .models import get_max_output_tokens_for_model
 

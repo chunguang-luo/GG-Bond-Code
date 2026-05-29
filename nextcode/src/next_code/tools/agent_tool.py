@@ -35,6 +35,32 @@ logger = logging.getLogger(__name__)
 # value: list of (semantic_key, prompt, asyncio.Task)
 _running_agents: dict[str, list[tuple[str, str, asyncio.Task]]] = defaultdict(list)
 
+# 并发限制：同时最多运行的 Agent 数量
+_MAX_CONCURRENT_AGENTS = 5
+
+
+def _count_running_agents() -> int:
+    """Count the total number of currently running agents across all types.
+
+    Filters out completed background tasks (asyncio.Task.done() is True)
+    and removes them from _running_agents to prevent stale entries.
+    Foreground agents (task=None) are always counted as running — they
+    are cleaned up via finally blocks in execute().
+    """
+    count = 0
+    to_remove: list[tuple[str, int]] = []  # (agent_type, list_index)
+    for agent_type, entries in _running_agents.items():
+        for i, (key, prompt, task) in enumerate(entries):
+            if task is not None and task.done():
+                # Background task already finished — stale entry, mark for removal
+                to_remove.append((agent_type, i))
+                continue
+            count += 1
+    # Clean up stale entries (reverse order to preserve indices)
+    for agent_type, idx in reversed(to_remove):
+        _running_agents[agent_type].pop(idx)
+    return count
+
 
 class AgentTool(Tool):
     name = "Agent"
@@ -121,6 +147,16 @@ class AgentTool(Tool):
             return ToolResult(
                 output=f"Agent 嵌套深度已达上限（当前 {current_depth} 层，最多 2 层），"
                        f"请直接使用工具完成任务，不要再启动子 Agent。",
+                error=True,
+            )
+
+        # ── 并发数量限制：最多同时运行 _MAX_CONCURRENT_AGENTS 个 Agent ──
+        running_count = _count_running_agents()
+        if running_count >= _MAX_CONCURRENT_AGENTS:
+            return ToolResult(
+                output=f"当前已有 {running_count} 个子 Agent 在运行，"
+                       f"超过并发上限（{_MAX_CONCURRENT_AGENTS}）。"
+                       f"请等待已有 Agent 完成后再启动新的，或直接使用工具完成任务。",
                 error=True,
             )
 

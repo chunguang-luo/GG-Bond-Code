@@ -422,12 +422,30 @@ function MessageItem({ msg, columns }: { msg: DisplayMessage; columns: number })
         </Box>
       );
 
-    case "thinking":
+    case "thinking": {
+      // Show thinking content with a collapsible-style display
+      const content = msg.content;
+      const lines = content.split("\n");
+      const isLong = lines.length > 6 || content.length > 500;
+      const preview = isLong
+        ? lines.slice(0, 6).join("\n") + (lines.length > 6 ? "\n..." : "")
+        : content;
       return (
         <Box flexDirection="column" marginBottom={0}>
-          <Text dimColor>Thinking: {msg.content.slice(0, 200)}</Text>
+          <Text dimColor color="cyan">⏺ Thinking</Text>
+          <Box marginLeft={2} flexDirection="column">
+            {preview.split("\n").map((line, i) => (
+              <Text key={i} dimColor>{line}</Text>
+            ))}
+          </Box>
+          {isLong && (
+            <Box marginLeft={2}>
+              <Text dimColor color="gray">({lines.length} lines total)</Text>
+            </Box>
+          )}
         </Box>
       );
+    }
 
     case "tool_use": {
       // Agent tool: skip rendering — agent_start will show type + prompt
@@ -612,10 +630,10 @@ function MessageItem({ msg, columns }: { msg: DisplayMessage; columns: number })
 export const MessageList = React.memo(function MessageList({ messages, currentText }: MessageListProps) {
   const { stdout } = useStdout();
   const columns = stdout?.columns || 120;
+
   return (
     <Box flexDirection="column" flexGrow={1} overflowY="hidden">
       {messages.map((msg, idx) => (
-        // Use index-based key to avoid duplicate IDs between tool_use and tool_result
         <MessageItem key={`${msg.type}-${idx}`} msg={msg} columns={columns} />
       ))}
       {/* Streaming text: gray ⏺ prefix while still generating */}

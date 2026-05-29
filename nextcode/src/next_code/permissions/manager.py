@@ -478,7 +478,7 @@ class PermissionManager:
 
     # ── Session grants ─────────────────────────────────────────────────
 
-    def grant_session(self, tool_name: str, params: dict[str, Any], wildcard: bool = False) -> str | None:
+    def grant_session(self, tool_name: str, params: dict[str, Any], wildcard: bool = False) -> list[str]:
         """Grant permission for the rest of this session.
 
         Args:
@@ -487,24 +487,42 @@ class PermissionManager:
             params: Tool parameters (used for specific grants and prefix suggestions).
 
         Returns:
-            The suggested prefix rule if applicable, or None.
+            List of suggested prefix rules that were persisted (e.g. ["git add", "git commit"]).
+            Empty list if no specific prefixes were extracted.
         """
         import logging
         logger = logging.getLogger(__name__)
         logger.info("grant_session: tool=%s, wildcard=%s, params=%s", tool_name, wildcard, params)
 
-        suggested_prefix = None
+        suggested_prefixes: list[str] = []
 
         if wildcard:
             # For Bash commands, try to suggest a more specific prefix
             if tool_name == "Bash" and "command" in params:
-                from ..tools.bash_rule_suggestion import get_command_prefix
+                from ..tools.bash_rule_suggestion import get_command_prefix, _split_compound, _extract_prefix_single
                 suggested_prefix = get_command_prefix(params["command"])
 
                 if suggested_prefix:
                     # Use the prefix as the grant pattern instead of Bash:*
                     # Store in key format (Bash:prefix:*) for _match() compatibility
                     pattern = f"Bash:{suggested_prefix}:*"
+                    self._session_allowed.add(pattern)
+                    self._persist_allow(pattern)
+                    suggested_prefixes.append(suggested_prefix)
+
+                    # For compound commands (&&, ||, ;), also extract and persist
+                    # prefixes for every meaningful segment — not just the last one.
+                    # e.g. "git add . && git commit -m 'fix'" should add both
+                    # Bash(git add:*) and Bash(git commit:*) rules.
+                    segments = _split_compound(params["command"])
+                    if len(segments) > 1:
+                        for segment in segments:
+                            seg_prefix = _extract_prefix_single(segment.strip())
+                            if seg_prefix and seg_prefix != suggested_prefix:
+                                seg_pattern = f"Bash:{seg_prefix}:*"
+                                self._session_allowed.add(seg_pattern)
+                                self._persist_allow(seg_pattern)
+                                suggested_prefixes.append(seg_prefix)
                 else:
                     # Cannot extract a specific prefix — only allow for this session,
                     # do NOT persist Bash:* to settings (too broad)
@@ -515,10 +533,12 @@ class PermissionManager:
                     )
                     key = self._make_key(tool_name, params)
                     self._session_allowed.add(key)
-                    return None
+                    return []
             elif tool_name in ("Edit", "Write"):
                 # For file operations, allow all files (Edit:* / Write:*)
                 pattern = f"{tool_name}:*"
+                self._session_allowed.add(pattern)
+                self._persist_allow(pattern)
             else:
                 # Other tools — don't persist broad Tool:* rules
                 logger.warning(
@@ -526,15 +546,12 @@ class PermissionManager:
                 )
                 key = self._make_key(tool_name, params)
                 self._session_allowed.add(key)
-                return None
-
-            self._session_allowed.add(pattern)
-            self._persist_allow(pattern)
+                return []
         else:
             key = self._make_key(tool_name, params)
             self._session_allowed.add(key)
 
-        return suggested_prefix
+        return suggested_prefixes
 
     def _persist_allow(self, pattern: str) -> None:
         """Persist an allow pattern to project .settings.json via public API.
@@ -586,7 +603,8 @@ class PermissionManager:
         if choice in ("a", "all"):
             suggested = self.grant_session(tool_name, params, wildcard=True)
             if suggested and tool_name == "Bash":
-                print(f"  Rule added: Bash({suggested}:*)")
+                for prefix in suggested:
+                    print(f"  Rule added: Bash({prefix}:*)")
             return PermissionDecision.ALLOW
         elif choice in ("y", "yes"):
             return PermissionDecision.ALLOW
