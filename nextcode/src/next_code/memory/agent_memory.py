@@ -9,9 +9,13 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from .types import MemoryType
+
+# 匹配代码库内路径：src/xxx、frontend/xxx、tests/xxx 等
+_PATH_PATTERN = re.compile(r"(?:^|[\s`(\[\"'])((?:src|frontend|tests|test|lib|pkg|cmd|internal|app|scripts|docs|config|tools)/[^\s`)\]\"',;]+)")
 
 
 def get_agent_memory_dir(
@@ -83,6 +87,21 @@ def load_agent_memory_prompt(
     if not files:
         return None
 
+    # 过滤掉引用了不存在路径的记忆文件
+    project_root = cwd or os.getcwd()
+    valid_files = []
+    for filename, content in files:
+        paths = _PATH_PATTERN.findall(content)
+        # 只验证 project/local scope 的路径（user scope 不绑定项目目录）
+        if scope == "user" or not paths:
+            valid_files.append((filename, content))
+            continue
+        if all(os.path.exists(os.path.join(project_root, p)) for p in paths):
+            valid_files.append((filename, content))
+
+    if not valid_files:
+        return None
+
     # scope 指引
     scope_notes = {
         "user": "- Since this memory is user-scope, keep learnings general since they apply across all projects",
@@ -96,7 +115,7 @@ def load_agent_memory_prompt(
     sections.append("This directory already exists — write to it directly with the Write tool.")
     sections.append("")
 
-    for filename, content in files:
+    for filename, content in valid_files:
         sections.append(f"### {filename}\n{content}")
 
     return "\n".join(sections)
