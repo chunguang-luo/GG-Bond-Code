@@ -245,6 +245,10 @@ export function InputBar({
     { isActive: !disabled }
   );
 
+  // Use a very long separator string — Ink's Yoga layout will truncate to terminal width.
+  // This avoids needing React re-renders on resize (Ink handles layout recalc internally).
+  const separator = "─".repeat(999);
+
   const { value, cursor } = inputState;
 
   return (
@@ -275,29 +279,9 @@ export function InputBar({
           })}
         </Box>
       )}
-      {/* Context bar: compact token usage progress bar */}
-      {contextInfo && (() => {
-        const { tokenUsage, effectiveWindow, warningState } = contextInfo;
-        const usedPct = effectiveWindow > 0 ? Math.round((tokenUsage / effectiveWindow) * 100) : 0;
-        const barLen = 10;
-        const filled = effectiveWindow > 0 ? Math.min(barLen, Math.round(barLen * tokenUsage / effectiveWindow)) : 0;
-        const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
-        const fmtK = (n: number) => {
-          const k = Math.round(n / 1000);
-          return `${k}k`;
-        };
-        const barColor = warningState === "blocking" ? "red" : (warningState === "auto_compact" || warningState === "warning") ? "yellow" : "green";
-        return (
-          <Box paddingLeft={1}>
-            <Text dimColor>{" Context "}</Text>
-            <Text color={barColor}>{bar}</Text>
-            <Text dimColor>{` ${fmtK(tokenUsage)}/${fmtK(effectiveWindow)} (${usedPct}%)`}</Text>
-          </Box>
-        );
-      })()}
       {/* Input line */}
       <Box flexDirection="column">
-        <Text color="gray">{"─".repeat(process.stdout.columns ?? 80)}</Text>
+        <Box width="100%"><Text color="gray" wrap="truncate-end">{separator}</Text></Box>
         {(() => {
           const lines = value.split("\n");
           const { line: cursorLine, col: cursorCol } = getCursorLineCol(value, cursor);
@@ -332,29 +316,40 @@ export function InputBar({
             );
           });
         })()}
-        <Text color="gray">{"─".repeat(process.stdout.columns ?? 80)}</Text>
+        <Box width="100%"><Text color="gray" wrap="truncate-end">{separator}</Text></Box>
       </Box>
-      {/* Permission mode indicator */}
-      {permissionMode && permissionMode !== "default" && (
-        <Box paddingLeft={1}>
-          <Text dimColor>
-            {permissionMode === "acceptEdits"
-              ? "⏵⏵ accept edits — auto allows working dir edits"
-              : permissionMode === "plan"
-                ? "📖 plan mode — read only, asks before writes"
-                : permissionMode === "bypassPermissions"
-                  ? "⚡ bypass permissions — skip most prompts"
-                  : permissionMode}
-            {" (shift+tab to cycle)"}
-          </Text>
-        </Box>
-      )}
-      {/* Permission mode indicator when in default mode */}
-      {(!permissionMode || permissionMode === "default") && (
-        <Box paddingLeft={1}>
-          <Text dimColor>⏹ default — asks before writes (shift+tab to cycle)</Text>
-        </Box>
-      )}
+      {/* Status line: permission mode + context bar */}
+      <Box paddingLeft={1}>
+        <Text dimColor>
+          {permissionMode === "acceptEdits"
+            ? "⏵⏵ accept edits — auto allows working dir edits"
+            : permissionMode === "plan"
+              ? "📖 plan mode — read only, asks before writes"
+              : permissionMode === "bypassPermissions"
+                ? "⚡ bypass permissions — skip most prompts"
+                : "⏹ default — asks before writes"}
+          {" (shift+tab to cycle)"}
+        </Text>
+        {contextInfo && (() => {
+          const { tokenUsage, effectiveWindow, warningState } = contextInfo;
+          const usedPct = effectiveWindow > 0 ? Math.round((tokenUsage / effectiveWindow) * 100) : 0;
+          const barLen = 10;
+          const filled = effectiveWindow > 0 ? Math.min(barLen, Math.round(barLen * tokenUsage / effectiveWindow)) : 0;
+          const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
+          const fmtK = (n: number) => {
+            const k = Math.round(n / 1000);
+            return `${k}k`;
+          };
+          const barColor = warningState === "blocking" ? "red" : (warningState === "auto_compact" || warningState === "warning") ? "yellow" : "green";
+          return (
+            <>
+              <Text dimColor>{"｜Context "}</Text>
+              <Text color={barColor}>{bar}</Text>
+              <Text dimColor>{` ${fmtK(tokenUsage)}/${fmtK(effectiveWindow)} (${usedPct}%)`}</Text>
+            </>
+          );
+        })()}
+      </Box>
     </Box>
   );
 }

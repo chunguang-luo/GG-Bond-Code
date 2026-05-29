@@ -59,7 +59,7 @@ def configure_api_key() -> None:
     # Persist to global config (not project config)
     config_path = Path.home() / ".nextcode" / ".settings.json"
     from .settings import _load_json, _save_json
-    data = _load_json(config_path)
+    data, _ = _load_json(config_path)
     data["api_key"] = key
     _save_json(config_path, data)
     # Also update in-memory settings
@@ -76,7 +76,7 @@ def configure_interactive() -> None:
     from .settings import _load_json, _save_json
 
     config_path = Path.home() / ".nextcode" / ".settings.json"
-    data = _load_json(config_path)
+    data, _ = _load_json(config_path)
 
     current_key = get_setting("api_key", "")
     current_url = get_setting("base_url", "")
