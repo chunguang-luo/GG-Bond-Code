@@ -456,6 +456,20 @@ async def stream_message(
     if max_tokens is None:
         max_tokens = get_setting("context.max_tokens", 8192)
 
+    # Repair orphaned tool references before sending to API.
+    # DeepSeek and other strict APIs reject messages where a tool_use
+    # has no matching tool_result. This can happen after:
+    # - Streaming executor discard (tool_use collected but no result)
+    # - Compaction truncation (tool_use kept but tool_result cut)
+    # - Permission deny with abort (tool_use added but no result generated)
+    from ..compact.strategy import repair_tool_references
+    messages = repair_tool_references(messages)
+
+    # Validate message sequence integrity: tool_use and tool_result
+    # must appear as matching pairs, immediately consecutive.
+    # This catches edge cases that repair_tool_references may miss.
+    messages = _validate_message_sequence(messages)
+
     family = _model_family(model)
 
     # Override family based on api_protocol detected from base_url.
@@ -494,3 +508,232 @@ async def stream_message(
         combined_system = _sanitize_surrogates(combined_system)
         async for evt in _stream_openai(messages, tools, combined_system, model, max_tokens):
             yield evt
+
+
+def _validate_message_sequence(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate and fix the message sequence before sending to API.
+
+    Enforces the constraint that tool_use and tool_result must appear as
+    matching pairs, immediately consecutive. This is required by Anthropic's
+    API and DeepSeek's Anthropic-compatible endpoint.
+
+    The rules:
+    - Every tool_use in an assistant message must have a matching tool_result
+      in the immediately following user message (Anthropic) or tool message
+      (OpenAI).
+    - Every tool_result must have a matching tool_use in the immediately
+      preceding assistant message.
+    - No orphaned tool_use or tool_result is allowed.
+    """
+    if not messages:
+        return messages
+
+    # Detect format: if any assistant message has content as list with
+    # tool_use blocks, it's Anthropic format. Otherwise OpenAI.
+    is_anthropic_format = False
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        is_anthropic_format = True
+                        break
+        if is_anthropic_format:
+            break
+
+    if is_anthropic_format:
+        return _validate_anthropic_sequence(messages)
+    else:
+        return _validate_openai_sequence(messages)
+
+
+def _validate_anthropic_sequence(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate Anthropic-format message sequence.
+
+    In Anthropic format:
+    - assistant message with tool_use blocks
+    - immediately followed by user message with tool_result blocks
+    - tool_result blocks must match ALL tool_use IDs from the preceding assistant
+    """
+    result: list[dict[str, Any]] = []
+    i = 0
+
+    while i < len(messages):
+        msg = messages[i]
+        role = msg.get("role")
+
+        if role == "assistant":
+            content = msg.get("content")
+            if isinstance(content, list):
+                # Extract tool_use IDs from this assistant message
+                tool_use_ids: list[str] = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tid = block.get("id", "")
+                        if tid:
+                            tool_use_ids.append(tid)
+
+                if tool_use_ids:
+                    # This assistant message has tool_use — check that the
+                    # next message is a user message with matching tool_results
+                    next_idx = i + 1
+                    found_results: dict[str, dict[str, Any]] = {}
+
+                    # Search forward for tool_results matching these IDs
+                    for j in range(next_idx, len(messages)):
+                        other = messages[j]
+                        if other.get("role") != "user":
+                            continue
+                        other_content = other.get("content")
+                        if not isinstance(other_content, list):
+                            continue
+                        for block in other_content:
+                            if isinstance(block, dict) and block.get("type") == "tool_result":
+                                tid = block.get("tool_use_id", "")
+                                if tid in tool_use_ids and tid not in found_results:
+                                    found_results[tid] = block
+
+                    if len(found_results) == len(tool_use_ids):
+                        # All tool_results found — add assistant + user message pair
+                        result.append(msg)
+                        result.append({
+                            "role": "user",
+                            "content": [found_results[tid] for tid in tool_use_ids],
+                        })
+                        i += 1
+                        continue
+                    else:
+                        # Some tool_results are missing — remove orphaned tool_use blocks
+                        missing_ids = set(tool_use_ids) - set(found_results.keys())
+                        if missing_ids == set(tool_use_ids):
+                            # ALL tool_uses are orphaned — remove them from the message
+                            filtered = [
+                                b for b in content
+                                if not (isinstance(b, dict) and b.get("type") == "tool_use"
+                                        and b.get("id") in missing_ids)
+                            ]
+                            if filtered:
+                                msg = {**msg, "content": filtered}
+                                result.append(msg)
+                            # else: skip this assistant message entirely
+                        else:
+                            # Partial: remove only orphaned tool_use blocks
+                            filtered = [
+                                b for b in content
+                                if not (isinstance(b, dict) and b.get("type") == "tool_use"
+                                        and b.get("id") in missing_ids)
+                            ]
+                            msg = {**msg, "content": filtered}
+                            result.append(msg)
+                            # Add tool_results for the remaining tool_uses
+                            remaining_ids = [tid for tid in tool_use_ids if tid not in missing_ids]
+                            result.append({
+                                "role": "user",
+                                "content": [found_results[tid] for tid in remaining_ids],
+                            })
+                        i += 1
+                        continue
+            # Assistant without tool_use — pass through
+            result.append(msg)
+        elif role == "user":
+            content = msg.get("content")
+            if isinstance(content, list):
+                # Check for orphaned tool_result blocks (no matching tool_use before)
+                tool_result_ids = {
+                    b.get("tool_use_id", "")
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "tool_result"
+                }
+                if tool_result_ids:
+                    # Check if these tool_results were already consumed by a previous assistant
+                    # If so, skip this user message (it was a duplicate)
+                    # If not, remove the orphaned tool_result blocks
+                    non_tool_blocks = [
+                        b for b in content
+                        if not (isinstance(b, dict) and b.get("type") == "tool_result")
+                    ]
+                    if non_tool_blocks:
+                        result.append({**msg, "content": non_tool_blocks})
+                    # else: skip this user message entirely
+                    i += 1
+                    continue
+            result.append(msg)
+        else:
+            result.append(msg)
+
+        i += 1
+
+    return result
+
+
+def _validate_openai_sequence(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate OpenAI-format message sequence.
+
+    In OpenAI format:
+    - assistant message with tool_calls
+    - immediately followed by role="tool" messages for each tool_call
+    - Each tool message's tool_call_id must match a tool_call id
+    """
+    result: list[dict[str, Any]] = []
+    i = 0
+
+    while i < len(messages):
+        msg = messages[i]
+        role = msg.get("role")
+
+        if role == "assistant":
+            tool_calls = msg.get("tool_calls", [])
+            if tool_calls:
+                tool_call_ids = {tc.get("id", "") for tc in tool_calls}
+
+                # Find matching tool messages
+                found_tool_results: dict[str, dict[str, Any]] = {}
+                for j in range(i + 1, min(i + len(tool_calls) + 1, len(messages))):
+                    other = messages[j]
+                    if other.get("role") == "tool":
+                        tid = other.get("tool_call_id", "")
+                        if tid in tool_call_ids:
+                            found_tool_results[tid] = other
+
+                if len(found_tool_results) == len(tool_call_ids):
+                    # All tool results found — add assistant + tool messages
+                    result.append(msg)
+                    for tc in tool_calls:
+                        tid = tc.get("id", "")
+                        if tid in found_tool_results:
+                            result.append(found_tool_results[tid])
+                    i += 1
+                    continue
+                else:
+                    # Some tool results missing — remove orphaned tool_calls
+                    missing_ids = tool_call_ids - set(found_tool_results.keys())
+                    filtered_tc = [
+                        tc for tc in tool_calls
+                        if tc.get("id") not in missing_ids
+                    ]
+                    if not filtered_tc:
+                        # All tool_calls orphaned — keep text content only
+                        msg = {k: v for k, v in msg.items() if k != "tool_calls"}
+                        if msg.get("content"):
+                            result.append(msg)
+                    else:
+                        msg = {**msg, "tool_calls": filtered_tc}
+                        result.append(msg)
+                        # Add tool results for remaining tool_calls
+                        for tc in filtered_tc:
+                            tid = tc.get("id", "")
+                            if tid in found_tool_results:
+                                result.append(found_tool_results[tid])
+                    i += 1
+                    continue
+            result.append(msg)
+        elif role == "tool":
+            # Orphaned tool message (no matching tool_call) — skip
+            continue
+        else:
+            result.append(msg)
+
+        i += 1
+
+    return result

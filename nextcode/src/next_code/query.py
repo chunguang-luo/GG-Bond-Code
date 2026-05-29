@@ -348,6 +348,13 @@ class QueryRunner:
                         self._streaming_executor = None
                         self._loop_state.set_transition(TransitionReason.STREAMING_DISCARD)
 
+                    # Clear tool_use_blocks to prevent orphaned tool_use
+                    # in the assistant message. When the streaming executor
+                    # is discarded, these tools will never get a tool_result.
+                    # DeepSeek and other strict APIs reject messages where
+                    # tool_use has no matching tool_result immediately after.
+                    tool_use_blocks.clear()
+
                     # Try recovery strategies
                     recovered = False
                     for recovery_strategy in self._recovery_strategies:
