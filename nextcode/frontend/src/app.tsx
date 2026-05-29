@@ -89,7 +89,6 @@ export function App({ transport }: AppProps) {
   const [inputState, setInputState] = useState({ value: "", cursor: 0 });
   const [isQueryRunning, setIsQueryRunning] = useState(false);
   const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null);
-  const [showThinking, setShowThinking] = useState(false);
   const [model, setModel] = useState("unknown");
   const [cwd, setCwd] = useState("unknown");
   const [permissionMode, setPermissionMode] = useState<string>("default");
@@ -189,13 +188,9 @@ export function App({ transport }: AppProps) {
   const currentText = currentTextRef.current;
   const thinkingText = thinkingTextRef.current;
 
-  // Helper: finalize accumulated thinking text into messages
+  // Helper: clear thinking text buffer (status bar already displays it live)
   const finalizeThinkingText = useCallback(() => {
-    if (thinkingTextRef.current) {
-      const text = thinkingTextRef.current;
-      thinkingTextRef.current = "";
-      setMessages((prev) => [...prev, { id: nextId(), type: "thinking", content: text }]);
-    }
+    thinkingTextRef.current = "";
   }, []);
 
   // Helper: finalize current accumulated text into messages
@@ -257,7 +252,7 @@ export function App({ transport }: AppProps) {
 
         case CoreToInk.QUERY_THINKING_DELTA: {
           const text = (msg.payload as { text?: string }).text || "";
-          // Always accumulate thinking text (regardless of showThinking toggle)
+          // Accumulate thinking text for status bar display (not shown in message list)
           thinkingTextRef.current += text;
           scheduleFlush();
           break;
@@ -799,7 +794,7 @@ export function App({ transport }: AppProps) {
         }
       }
     });
-  }, [transport, showThinking, finalizeCurrentText, scheduleFlush]);
+  }, [transport, finalizeCurrentText, scheduleFlush]);
 
   // ── User Input ────────────────────────────────────────────────────────────
 
