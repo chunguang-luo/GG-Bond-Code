@@ -30,10 +30,10 @@ def test_get_model_spec_deepseek_chat():
 
 
 def test_get_model_spec_unknown_model():
-    """Unknown models fall back to default spec."""
+    """Unknown models fall back to default spec (200k context)."""
     spec = get_model_spec("some-unknown-model-v1")
-    assert spec.context_window == 128_000
-    assert spec.max_output_tokens == 8_192
+    assert spec.context_window == 200_000
+    assert spec.max_output_tokens == 16_384
 
 
 def test_longest_prefix_match():

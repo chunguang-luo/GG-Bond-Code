@@ -39,8 +39,8 @@ _MODEL_SPECS: list[tuple[str, ModelSpec]] = [
     ("minimax-", ModelSpec(context_window=200_000, max_output_tokens=8_192)),
 ]
 
-# Fallback for unknown models
-_DEFAULT_SPEC = ModelSpec(context_window=128_000, max_output_tokens=8_192)
+# Fallback for unknown models (200k context, matching most providers)
+_DEFAULT_SPEC = ModelSpec(context_window=200_000, max_output_tokens=16_384)
 
 
 def get_model_spec(model: str) -> ModelSpec:
