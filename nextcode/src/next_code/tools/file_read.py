@@ -39,7 +39,13 @@ class FileReadTool(Tool):
         return True
 
     async def execute(self, params: dict[str, Any]) -> ToolResult:
-        file_path = Path(params["file_path"])
+        file_path_str = params.get("file_path")
+        if not file_path_str:
+            return ToolResult(
+                output="Read 工具缺少 file_path 参数，请确保提供了要读取的文件绝对路径",
+                error=True,
+            )
+        file_path = Path(file_path_str)
         offset = params.get("offset")
         limit = params.get("limit")
 

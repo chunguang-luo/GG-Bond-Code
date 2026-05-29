@@ -30,8 +30,19 @@ class FileWriteTool(Tool):
         }
 
     async def execute(self, params: dict[str, Any]) -> ToolResult:
-        file_path = Path(params["file_path"])
-        content = params["content"]
+        file_path_str = params.get("file_path")
+        content = params.get("content")
+        if not file_path_str:
+            return ToolResult(
+                output="Write 工具缺少 file_path 参数，请确保提供了要写入的文件绝对路径",
+                error=True,
+            )
+        if content is None:
+            return ToolResult(
+                output="Write 工具缺少 content 参数，请确保提供了要写入的内容",
+                error=True,
+            )
+        file_path = Path(file_path_str)
 
         # Safety check: block writes to partially-viewed files
         if self._context is not None:

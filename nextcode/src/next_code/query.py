@@ -180,7 +180,12 @@ class QueryRunner:
         user_ctx = get_user_context(ctx.get_state("cwd"))
 
         # Build full system prompt
-        static_sections = build_system_prompt(cwd=ctx.get_state("cwd"))
+        # self.system_prompt may be overridden by sub-agents (runner.py sets
+        # runner.system_prompt = [agent_system_prompt]) — use it when present.
+        if self.system_prompt:
+            static_sections = self.system_prompt
+        else:
+            static_sections = build_system_prompt(cwd=ctx.get_state("cwd"))
         # Omit git status context for agents that don't need it
         omit_git = ctx.get_state("omit_git_status") or False
         dynamic_sections = (
@@ -249,6 +254,24 @@ class QueryRunner:
         try:
             for _ in range(self.max_turns):
                 self._loop_state.turn_count += 1
+
+                # Guard against context overflow for sub-agents (compaction disabled).
+                # Estimate tokens and bail out before sending a request that will fail.
+                if not self._enable_compaction:
+                    from .compact.budget import estimate_token_count, get_effective_context_window
+                    token_estimate = estimate_token_count(messages)
+                    # Add rough system prompt + tools overhead
+                    system_chars = sum(len(s) for s in full_system_prompt if isinstance(s, str))
+                    token_estimate += system_chars // 4
+                    effective_window = get_effective_context_window(self.model)
+                    if token_estimate >= effective_window - 5000:
+                        yield QueryEvent(
+                            type="error",
+                            content=f"子 Agent 上下文即将溢出（估算 {token_estimate} tokens，"
+                                    f"上限 {effective_window}），提前终止以避免 API 错误。",
+                        )
+                        break
+
                 text_parts: list[str] = []
                 thinking_parts: list[str] = []
                 tool_use_blocks: list[dict[str, Any]] = []
