@@ -17,13 +17,15 @@ from .init import init
 @click.option("--cwd", default=None, help="Working directory.")
 @click.option("--allowed-tools", "allowed_tools", default=None, help="Comma-separated list of allowed tools.")
 @click.option("--disallowed-tools", "disallowed_tools", default=None, help="Comma-separated list of disallowed tools.")
+@click.option("--mcp-config", "mcp_config", default=None,
+              help="Path to MCP server config JSON, or inline JSON.")
 @click.option("--permission-mode", "permission_mode", default=None,
               type=click.Choice(["default", "plan", "acceptEdits", "bypassPermissions", "dontAsk"]),
               help="Permission mode for this session.")
 @click.pass_context
 def cli(ctx: click.Context, version: bool, print_mode: bool, model: str | None,
         cwd: str | None, allowed_tools: str | None, disallowed_tools: str | None,
-        permission_mode: str | None) -> None:
+        mcp_config: str | None, permission_mode: str | None) -> None:
     """NextCode — AI-powered CLI assistant."""
     ctx.ensure_object(dict)
 
@@ -41,6 +43,7 @@ def cli(ctx: click.Context, version: bool, print_mode: bool, model: str | None,
     ctx.obj["print_mode"] = print_mode
     ctx.obj["allowed_tools"] = allowed_tools
     ctx.obj["disallowed_tools"] = disallowed_tools
+    ctx.obj["mcp_config"] = mcp_config
     ctx.obj["permission_mode"] = permission_mode
 
     # If no sub-command, launch interactive REPL
@@ -49,6 +52,31 @@ def cli(ctx: click.Context, version: bool, print_mode: bool, model: str | None,
             asyncio.run(_run_print_mode(ctx))
         else:
             asyncio.run(_run_interactive(ctx))
+
+
+def _parse_mcp_config(mcp_config: str | None) -> dict | None:
+    """Parse --mcp-config argument: file path or inline JSON.
+
+    Returns a dict of {server_name: config_dict} or None.
+    """
+    if not mcp_config:
+        return None
+
+    import json
+    from pathlib import Path
+
+    # Try as file path first
+    path = Path(mcp_config)
+    if path.is_file():
+        data = json.loads(path.read_text())
+        return data.get("mcpServers", data)
+
+    # Try as inline JSON
+    try:
+        data = json.loads(mcp_config)
+        return data.get("mcpServers", data)
+    except json.JSONDecodeError:
+        return None
 
 
 async def _run_interactive(ctx: click.Context) -> None:
@@ -60,15 +88,35 @@ async def _run_interactive(ctx: click.Context) -> None:
     from .ipc.transport import IPCTransport
     from .ipc.ink_launcher import InkLauncher
     from .ipc.bridge import IPCBridge
+    from .tools.base import create_default_registry
+    from .mcp.manager import MCPConnectionManager
 
     logger = logging.getLogger(__name__)
 
     setup(cwd=ctx.obj["cwd"], model=ctx.obj["model"])
 
+    # Create shared tool registry (used by both MCP and QueryRunner)
+    registry = create_default_registry()
+
+    # Initialize MCP connections (non-blocking — tools register as servers come online)
+    mcp_manager = MCPConnectionManager(registry)
+    dynamic_configs = _parse_mcp_config(ctx.obj.get("mcp_config"))
+    await mcp_manager.initialize(dynamic_configs=dynamic_configs)
+
+    # Log MCP status
+    status = mcp_manager.get_status()
+    if status:
+        for name, state in status.items():
+            if state == "connected":
+                logger.info("MCP: %s — connected", name)
+            else:
+                logger.warning("MCP: %s — %s", name, state)
+
     # Pre-flight check: Ink must be available
     available, reason = check_ink_available()
     if not available:
         click.echo(f"Error: Ink frontend unavailable: {reason}", err=True)
+        await mcp_manager.shutdown()
         raise SystemExit(1)
 
     transport = IPCTransport()
@@ -79,6 +127,7 @@ async def _run_interactive(ctx: click.Context) -> None:
         allowed_tools=ctx.obj.get("allowed_tools"),
         disallowed_tools=ctx.obj.get("disallowed_tools"),
         permission_mode=ctx.obj.get("permission_mode"),
+        tool_registry=registry,
     )
 
     try:
@@ -119,6 +168,7 @@ async def _run_interactive(ctx: click.Context) -> None:
     finally:
         await launcher.shutdown()
         await transport.close()
+        await mcp_manager.shutdown()
 
 
 async def _run_print_mode(ctx: click.Context) -> None:
@@ -127,17 +177,29 @@ async def _run_print_mode(ctx: click.Context) -> None:
 
     from .setup import setup
     from .query import QueryRunner
+    from .tools.base import create_default_registry
+    from .mcp.manager import MCPConnectionManager
 
     prompt = sys.stdin.read().strip()
     if not prompt:
         return
 
     setup(cwd=ctx.obj["cwd"], model=ctx.obj["model"])
-    runner = QueryRunner(model=ctx.obj["model"], enable_streaming_tools=True)
-    async for event in runner.run(prompt):
-        if event.type == "text":
-            click.echo(event.content, nl=False)
-    click.echo()
+
+    # Create shared tool registry with MCP tools
+    registry = create_default_registry()
+    mcp_manager = MCPConnectionManager(registry)
+    dynamic_configs = _parse_mcp_config(ctx.obj.get("mcp_config"))
+    await mcp_manager.initialize(dynamic_configs=dynamic_configs)
+
+    try:
+        runner = QueryRunner(model=ctx.obj["model"], tool_registry=registry, enable_streaming_tools=True)
+        async for event in runner.run(prompt):
+            if event.type == "text":
+                click.echo(event.content, nl=False)
+        click.echo()
+    finally:
+        await mcp_manager.shutdown()
 
 
 @cli.command()

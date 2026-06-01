@@ -46,12 +46,13 @@ class IPCBridge:
         allowed_tools: str | None = None,
         disallowed_tools: str | None = None,
         permission_mode: str | None = None,
+        tool_registry: Any | None = None,
     ) -> None:
         self.transport = transport
         self.model = model
 
         # Query runner with IPC permission callback
-        self._context = create_store_context()
+        self._context = create_store_context(registry=tool_registry)
         self._runner = QueryRunner(
             model=model,
             permission_callback=self._ask_permission,
@@ -233,7 +234,7 @@ class IPCBridge:
             await self.transport.send_event("query.info", {"message": message})
         elif result.type == ResultType.CLEAR:
             self._message_queue.clear()
-            self._context = create_store_context()
+            self._context = create_store_context(registry=tool_registry)
             self._runner = QueryRunner(
                 model=self.model,
                 permission_callback=self._ask_permission,
