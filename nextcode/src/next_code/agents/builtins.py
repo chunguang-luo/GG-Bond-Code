@@ -31,6 +31,7 @@ def get_builtin_agents() -> list[AgentDefinition]:
             "very thorough for comprehensive analysis.",
             source=AgentSource.BUILTIN,
             disallowed_tools=["Edit", "NotebookEdit", "Agent"],
+            max_turns=20,
             model=None,  # inherit from parent
             omit_nextcode_md=True,
             omit_git_status=True,

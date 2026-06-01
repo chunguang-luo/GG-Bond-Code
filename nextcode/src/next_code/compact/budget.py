@@ -55,7 +55,18 @@ def estimate_token_count(messages: list[dict]) -> int:
                 if btype == "text":
                     total_chars += len(block.get("text", ""))
                 elif btype == "tool_result":
-                    total_chars += len(str(block.get("content", "")))
+                    # Content is typically a string (tool output).
+                    # Avoid str() on non-string content which produces huge repr.
+                    rc = block.get("content", "")
+                    if isinstance(rc, str):
+                        total_chars += len(rc)
+                    elif isinstance(rc, list):
+                        # List of content blocks within tool_result
+                        for sub in rc:
+                            if isinstance(sub, dict):
+                                total_chars += len(sub.get("text", ""))
+                            elif isinstance(sub, str):
+                                total_chars += len(sub)
                 elif btype == "tool_use":
                     total_chars += len(json.dumps(block.get("input", {})))
 

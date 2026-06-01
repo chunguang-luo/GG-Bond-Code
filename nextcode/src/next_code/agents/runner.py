@@ -133,7 +133,7 @@ async def run_agent(
         model=model,
         context=agent_context,
         max_turns=max_turns,
-        enable_compaction=False,  # 子 Agent 不做 compaction
+        enable_compaction=True,
         enable_streaming_tools=True,
         abort_on_permission_deny=is_async,  # 后台 Agent 权限拒绝时立即中断
     )

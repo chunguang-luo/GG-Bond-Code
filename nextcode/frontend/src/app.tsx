@@ -18,9 +18,19 @@ import { WelcomeScreen } from "./components/welcome-screen";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
+interface AgentEntry {
+  agent_id: string;
+  agent_type: string;
+  description: string;
+  status: "running" | "done" | "failed";
+  tool_use_count: number;
+  elapsed: string;
+  is_background: boolean;
+}
+
 interface DisplayMessage {
   id: string;
-  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system" | "info" | "command" | "agent_start" | "agent_tool_use" | "agent_tool_result" | "agent_result" | "queued" | "task_notification";
+  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system" | "info" | "command" | "agent_group" | "agent_result" | "queued" | "task_notification";
   content: string;
   toolName?: string;
   toolInput?: Record<string, unknown>;
@@ -145,7 +155,8 @@ export function App({ transport }: AppProps) {
   const thinkingTextRef = useRef("");
   // Track last displayed toolPurpose to avoid duplicates from parallel tool calls
   const lastPurposeRef = useRef("");
-  // Queue of user messages submitted while a query is running.
+  // Track the latest Agent tool purpose for use as agent_group title
+  const agentGroupTitleRef = useRef("");  // Queue of user messages submitted while a query is running.
   // Shown above the input bar as pending tasks. When the current response
   // finishes, the first queued message is sent as the next query.
   // Using ref + state pair: ref for synchronous access in onMessage,
@@ -277,11 +288,26 @@ export function App({ transport }: AppProps) {
           if (payload.toolName) {
             setCurrentTool(payload.toolName);
           }
-          // Show toolPurpose text once — skip if it's the same as the last one
+          // Agent tool: extract description param as group title
+          // Only use as title if all parallel agents share the same description.
+          // If different descriptions come in, clear title to fallback to "N Agents".
+          if (payload.toolName === "Agent") {
+            const desc = (payload.toolInput as Record<string, unknown>)?.description as string || "";
+            if (desc) {
+              if (!agentGroupTitleRef.current) {
+                agentGroupTitleRef.current = desc;
+              } else if (agentGroupTitleRef.current !== desc) {
+                agentGroupTitleRef.current = "";
+              }
+            }
+          }
+          // Show toolPurpose text once - skip if same as last
           // (parallel tool calls share the same purpose, avoid duplication)
           if (payload.toolPurpose && payload.toolPurpose !== lastPurposeRef.current) {
             lastPurposeRef.current = payload.toolPurpose;
-            setMessages((prev) => [...prev, { id: nextId(), type: "text", content: payload.toolPurpose! }]);
+            if (payload.toolName !== "Agent") {
+              setMessages((prev) => [...prev, { id: nextId(), type: "text", content: payload.toolPurpose! }]);
+            }
           }
           setMessages((prev) => [
             ...prev,
@@ -358,16 +384,54 @@ export function App({ transport }: AppProps) {
             agent_type?: string;
             description?: string;
             prompt?: string;
+            is_background?: boolean;
           };
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: nextId(),
-              type: "agent_start",
-              content: agentMeta.description || agentMeta.agent_type || "Agent",
-              metadata: { ...msg.payload, _startMs: Date.now() } as Record<string, unknown>,
-            },
-          ]);
+          const newAgent: AgentEntry = {
+            agent_id: agentMeta.agent_id || "",
+            agent_type: agentMeta.agent_type || "Agent",
+            description: agentMeta.description || agentMeta.agent_type || "Agent",
+            status: "running",
+            tool_use_count: 0,
+            elapsed: "",
+            is_background: agentMeta.is_background || false,
+          };
+          setMessages((prev) => {
+            // Find the last agent_group message that still has running agents
+            const lastOpenGroupIdx = prev.findLastIndex(
+              (m) => m.type === "agent_group" && !(m.metadata?._allDone as boolean)
+            );
+            if (lastOpenGroupIdx >= 0) {
+              // Append this agent to the existing group
+              return prev.map((m, i) => {
+                if (i === lastOpenGroupIdx) {
+                  const existingAgents = (m.metadata?._agents as AgentEntry[]) || [];
+                  return {
+                    ...m,
+                    metadata: {
+                      ...m.metadata,
+                      _agents: [...existingAgents, newAgent],
+                    },
+                  };
+                }
+                return m;
+              });
+            }
+            // No open group — create a new one
+            return [
+              ...prev,
+              {
+                id: nextId(),
+                type: "agent_group" as const,
+                content: "",
+                metadata: {
+                  _startMs: Date.now(),
+                  _title: agentGroupTitleRef.current || "",
+                  _agents: [newAgent],
+                  _allDone: false,
+                } as Record<string, unknown>,
+              },
+            ];
+          });
           break;
         }
 
@@ -387,12 +451,22 @@ export function App({ transport }: AppProps) {
         }
 
         case CoreToInk.AGENT_PROGRESS: {
-          // Update the corresponding agent_start message with tool count
-          const progress = msg.payload as { agent_id?: string; tool_use_count?: number };
+          const progress = msg.payload as {
+            agent_id?: string;
+            tool_use_count?: number;
+          };
           if (progress.agent_id) {
             setMessages((prev) => prev.map((m) => {
-              if (m.type === "agent_start" && m.metadata?.agent_id === progress.agent_id) {
-                return { ...m, metadata: { ...m.metadata, _tool_use_count: progress.tool_use_count || 0 } };
+              if (m.type === "agent_group") {
+                const agents = (m.metadata?._agents as AgentEntry[]) || [];
+                const updated = agents.map((a) =>
+                  a.agent_id === progress.agent_id
+                    ? { ...a, tool_use_count: progress.tool_use_count || 0 }
+                    : a
+                );
+                if (updated !== agents) {
+                  return { ...m, metadata: { ...m.metadata, _agents: updated } };
+                }
               }
               return m;
             }));
@@ -401,46 +475,42 @@ export function App({ transport }: AppProps) {
         }
 
         case CoreToInk.AGENT_RESULT: {
-          // Update the corresponding agent_start message AND add a separate agent_result message.
-          // The agent_start update stops the timer and shows Done status.
-          // The separate agent_result message ensures correct rendering when multiple
-          // agents of the same type run in parallel (each gets its own result line).
           const resultPayload = msg.payload as { agent_id?: string; elapsed?: string; tool_use_count?: number; agent_type?: string };
           if (resultPayload.agent_id) {
-            setMessages((prev) => {
-              const updated = prev.map((m) => {
-                if (m.type === "agent_start" && m.metadata?.agent_id === resultPayload.agent_id) {
-                  return {
-                    ...m,
-                    type: "agent_start",
-                    metadata: {
-                      ...m.metadata,
-                      _done: true,
-                      _finalElapsed: resultPayload.elapsed || "",
-                      _tool_use_count: resultPayload.tool_use_count || m.metadata?._tool_use_count || 0,
-                    },
-                  };
-                }
-                return m;
-              });
-              // Add a separate agent_result message with elapsed and tool count
-              return [...updated, {
-                id: nextId(),
-                type: "agent_result" as const,
-                content: "",
-                metadata: {
-                  agent_id: resultPayload.agent_id,
-                  agent_type: resultPayload.agent_type,
-                  _elapsed: resultPayload.elapsed || "",
-                  tool_use_count: resultPayload.tool_use_count || 0,
-                },
-              }];
-            });
+            setMessages((prev) => prev.map((m) => {
+              if (m.type === "agent_group") {
+                const agents = (m.metadata?._agents as AgentEntry[]) || [];
+                const hasAgent = agents.some((a) => a.agent_id === resultPayload.agent_id);
+                if (!hasAgent) return m;
+                const updatedAgents = agents.map((a) =>
+                  a.agent_id === resultPayload.agent_id
+                    ? {
+                        ...a,
+                        status: "done" as const,
+                        elapsed: resultPayload.elapsed || "",
+                        tool_use_count: resultPayload.tool_use_count || a.tool_use_count,
+                      }
+                    : a
+                );
+                const allDone = updatedAgents.every((a) => a.status === "done" || a.status === "failed");
+                return {
+                  ...m,
+                  metadata: {
+                    ...m.metadata,
+                    _agents: updatedAgents,
+                    _allDone: allDone,
+                    _finalElapsed: allDone ? resultPayload.elapsed || "" : "",
+                  },
+                };
+              }
+              return m;
+            }));
           }
           break;
         }
 
         case CoreToInk.QUERY_COMPLETE: {
+          const transitionReason = (msg.payload as { transitionReason?: string }).transitionReason || "done";
           // Flush any pending batch immediately
           if (flushTimerRef.current !== null) {
             clearTimeout(flushTimerRef.current);
@@ -463,6 +533,28 @@ export function App({ transport }: AppProps) {
           finalizeCurrentText();
           setCurrentTool(null);
           setRenderTick((t) => t + 1); // Immediate final render
+          // On cancel, mark all running agents as cancelled so old groups
+          // don't absorb new agents from the next query
+          if (transitionReason === "cancelled") {
+            setMessages((prev) => prev.map((m) => {
+              if (m.type === "agent_group" && !(m.metadata?._allDone as boolean)) {
+                const agents = (m.metadata?._agents as AgentEntry[]) || [];
+                const updatedAgents = agents.map((a) =>
+                  a.status === "running" ? { ...a, status: "done" as const, elapsed: "cancelled" } : a
+                );
+                return {
+                  ...m,
+                  metadata: {
+                    ...m.metadata,
+                    _agents: updatedAgents,
+                    _allDone: true,
+                  },
+                };
+              }
+              return m;
+            }));
+            agentGroupTitleRef.current = "";
+          }
           // Flush any pending task notifications after the query output
           const pendingNotifs = pendingNotificationsRef.current;
           if (pendingNotifs.length > 0) {
@@ -679,17 +771,19 @@ export function App({ transport }: AppProps) {
 
         case CoreToInk.TASK_STARTED: {
           const ts = msg.payload as { task_id?: string; task_type?: string; description?: string };
-          const typeLabel = ts.task_type === "local_agent" ? "Agent" : "Shell";
           const taskId = ts.task_id || "";
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: nextId(),
-              type: "task_notification",
-              content: `⏳ Background ${typeLabel} started: ${taskId}`,
-              metadata: { isStarted: true, description: ts.description || "" },
-            },
-          ]);
+          // local_agent tasks are shown via AGENT_START -> agent_group, skip task_notification
+          if (ts.task_type !== "local_agent") {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: nextId(),
+                type: "task_notification",
+                content: `⏳ Background Shell started: ${taskId}`,
+                metadata: { isStarted: true, description: ts.description || "" },
+              },
+            ]);
+          }
           // Update task state
           setTasks((prev) => {
             const next = new Map(prev);
@@ -711,7 +805,7 @@ export function App({ transport }: AppProps) {
           const tf = msg.payload as { task_id?: string; task_type?: string; status?: string; result?: string; description?: string };
           const isFailed = msg.type === CoreToInk.TASK_FAILED;
           const icon = isFailed ? "✗" : "✓";
-          const typeLabel = tf.task_type === "local_agent" ? "Agent" : "Shell";
+          // local_agent tasks shown via agent_group
           const taskId = tf.task_id || "";
           // Use the streamed output if available, otherwise use result
           const streamedOutput = taskOutputs.get(taskId);
@@ -719,7 +813,7 @@ export function App({ transport }: AppProps) {
           const notification: DisplayMessage = {
             id: nextId(),
             type: "task_notification",
-            content: `${icon} Background ${typeLabel} ${isFailed ? "failed" : "completed"}`,
+            content: `${icon} Background Shell ${isFailed ? "failed" : "completed"}`,
             metadata: {
               result: outputToShow,
               isFailed,
@@ -756,11 +850,10 @@ export function App({ transport }: AppProps) {
             }
             return next;
           });
-          // Always show task completion notifications immediately —
-          // background tasks are meant to be non-blocking, so their
-          // results should appear as soon as they finish, even if a
-          // query is still running.
-          setMessages((prev) => [...prev, notification]);
+          // local_agent tasks shown via agent_group, skip notification
+          if (tf.task_type !== "local_agent") {
+            setMessages((prev) => [...prev, notification]);
+          }
           break;
         }
 
@@ -837,20 +930,18 @@ export function App({ transport }: AppProps) {
         }
       } else if (text.trim()) {
         setShowWelcome(false);
+        // Show user's question in message list
+        setMessages((prev) => [
+          ...prev,
+          { id: nextId(), type: "system", content: text },
+        ]);
         if (isQueryRunning) {
-          // Query is running — add to pending list shown above input bar.
-          // Will be sent as the next query after the current response finishes.
-          pendingQuestionsRef.current.push(text);
-          setPendingQuestions([...pendingQuestionsRef.current]);
+          // Inject into the current running query for immediate processing
+          transport.sendEvent(InkToCore.USER_MESSAGE, { text });
         } else {
           setIsQueryRunning(true);
           setQueryStartMs(Date.now());
           lastPurposeRef.current = "";
-          // Show user's question in message list
-          setMessages((prev) => [
-            ...prev,
-            { id: nextId(), type: "system", content: text },
-          ]);
           transport.sendEvent(InkToCore.USER_MESSAGE, { text });
         }
       }
@@ -951,19 +1042,8 @@ export function App({ transport }: AppProps) {
               {!thinkingText && <Text italic color="cyan">...</Text>}
             </>
           )}
-          {(bgTaskCount.bash > 0 || bgTaskCount.agent > 0 || bgTaskCount.bash_done > 0 || bgTaskCount.agent_done > 0) && (
-            <Text dimColor> | bg: {[
-              (bgTaskCount.bash > 0 || bgTaskCount.bash_done > 0) && (() => {
-                const total = bgTaskCount.bash + bgTaskCount.bash_done;
-                const bar = makeBar(bgTaskCount.bash_done, total);
-                return `shell ${bar} ${bgTaskCount.bash_done}/${total}`;
-              })(),
-              (bgTaskCount.agent > 0 || bgTaskCount.agent_done > 0) && (() => {
-                const total = bgTaskCount.agent + bgTaskCount.agent_done;
-                const bar = makeBar(bgTaskCount.agent_done, total);
-                return `agent ${bar} ${bgTaskCount.agent_done}/${total}`;
-              })(),
-            ].filter(Boolean).join("  ")}</Text>
+          {(bgTaskCount.bash > 0 || bgTaskCount.bash_done > 0) && (
+            <Text dimColor> | bg: shell {makeBar(bgTaskCount.bash_done, bgTaskCount.bash + bgTaskCount.bash_done)} {bgTaskCount.bash_done}/{bgTaskCount.bash + bgTaskCount.bash_done}</Text>
           )}
         </Box>
       )}
@@ -983,20 +1063,9 @@ export function App({ transport }: AppProps) {
         </Box>
       )}
       {/* Show background task count even when not thinking */}
-      {!isQueryRunning && (bgTaskCount.bash > 0 || bgTaskCount.agent > 0 || bgTaskCount.bash_done > 0 || bgTaskCount.agent_done > 0) && (
+      {!isQueryRunning && (bgTaskCount.bash > 0 || bgTaskCount.bash_done > 0) && (
         <Box marginTop={0} marginLeft={1}>
-          <Text dimColor>bg: {[
-            (bgTaskCount.bash > 0 || bgTaskCount.bash_done > 0) && (() => {
-              const total = bgTaskCount.bash + bgTaskCount.bash_done;
-              const bar = makeBar(bgTaskCount.bash_done, total);
-              return `shell ${bar} ${bgTaskCount.bash_done}/${total}`;
-            })(),
-            (bgTaskCount.agent > 0 || bgTaskCount.agent_done > 0) && (() => {
-              const total = bgTaskCount.agent + bgTaskCount.agent_done;
-              const bar = makeBar(bgTaskCount.agent_done, total);
-              return `agent ${bar} ${bgTaskCount.agent_done}/${total}`;
-            })(),
-          ].filter(Boolean).join("  ")}</Text>
+          <Text dimColor>bg: shell {makeBar(bgTaskCount.bash_done, bgTaskCount.bash + bgTaskCount.bash_done)} {bgTaskCount.bash_done}/{bgTaskCount.bash + bgTaskCount.bash_done}</Text>
         </Box>
       )}
       {/* Pending questions shown above input bar while a query is running */}

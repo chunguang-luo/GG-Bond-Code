@@ -82,10 +82,6 @@ class IPCBridge:
 
         # Track if a query is running
         self._query_task: asyncio.Task | None = None
-
-        # Message queue: user messages submitted while a query is running
-        # are enqueued and processed in order after the current query completes.
-        self._message_queue: list[str] = []
         self._is_query_running = False
 
         # Load skills (async — fire and forget, skills register when ready)
@@ -180,23 +176,41 @@ class IPCBridge:
     async def _handle_user_message(self, text: str) -> None:
         """Handle a user message from Ink.
 
-        If a query is currently running, the message is enqueued and will
-        be processed after the current query completes. Otherwise, a new
-        query is started immediately.
+        If a query is currently running, the message is injected into
+        the running query's next turn. Otherwise, a new query is started.
         """
         if not text.strip():
             return
 
         if self._is_query_running:
-            # Enqueue the message for later processing
-            self._message_queue.append(text)
-            await self.transport.send_event(CoreToInk.QUERY_QUEUED.value, {"text": text})
-            logger.info("IPC: query queued (queue depth: %d)", len(self._message_queue))
+            # Inject into the current running query for immediate processing
+            self._runner._injected_messages.append(text)
+            logger.info("IPC: message injected into running query (%d pending)",
+                         len(self._runner._injected_messages))
         else:
             self._query_task = asyncio.create_task(self._run_query(text))
 
     async def _handle_interrupt(self) -> None:
-        """Handle Ctrl+C from Ink: cancel the current query."""
+        """Handle Ctrl+C from Ink: cancel the current query and stop background agents."""
+        from ..tasks.registry import get_task_registry
+        from ..tasks.types import TaskType, TaskStatus
+        registry = get_task_registry()
+
+        # Cancel all running background agents
+        for task in registry.list_all():
+            if task.status == TaskStatus.RUNNING and task.type == TaskType.LOCAL_AGENT:
+                if task._asyncio_task and not task._asyncio_task.done():
+                    task._asyncio_task.cancel()
+                registry.update(task.id, status=TaskStatus.KILLED, result="Interrupted by user")
+
+        # Clear all task state so nothing leaks into the next query
+        registry.clear()
+        if self._clear_task_poller_state:
+            self._clear_task_poller_state()
+        from ..tools.agent_tool import _running_agents
+        _running_agents.clear()
+        self._runner._injected_messages.clear()
+
         if self._query_task is not None and not self._query_task.done():
             self._query_task.cancel()
 
@@ -222,6 +236,13 @@ class IPCBridge:
 
         result = await self._command_dispatcher.dispatch(command, context)
 
+        # Sync show_thinking state to frontend after /thinking command
+        if cmd_name == "/thinking":
+            await self.transport.send_event(
+                CoreToInk.STATE_UPDATE,
+                {"show_thinking": store.get("ui.show_thinking", False)},
+            )
+
         # Interpret result for IPC output
         if result.type == ResultType.TEXT:
             # Support both 'message' and 'content' fields
@@ -233,14 +254,19 @@ class IPCBridge:
                 message = f"**{result.content['title']}**\n\n{message}"
             await self.transport.send_event("query.info", {"message": message})
         elif result.type == ResultType.CLEAR:
-            self._message_queue.clear()
-            self._context = create_store_context(registry=tool_registry)
+            self._runner._injected_messages.clear()
+            self._context = create_store_context()
             self._runner = QueryRunner(
                 model=self.model,
                 permission_callback=self._ask_permission,
                 context=self._context,
                 enable_streaming_tools=True,
             )
+            # Clear task poller state and task registry
+            if self._clear_task_poller_state:
+                self._clear_task_poller_state()
+            from ..tasks.registry import get_task_registry
+            get_task_registry().clear()
             await self.transport.send_event("query.cleared", {})
         elif result.type == ResultType.SHUTDOWN:
             await self.transport.send_event(CoreToInk.SESSION_SHUTDOWN, result.content)
@@ -304,11 +330,9 @@ class IPCBridge:
             await self._process_queue()
 
     async def _process_queue(self) -> None:
-        """Process the next queued user message, if any."""
-        if self._message_queue:
-            next_message = self._message_queue.pop(0)
-            # Notify frontend that the queued message is now being processed
-            await self.transport.send_event(CoreToInk.QUERY_DEQUEUE.value, {"text": next_message})
+        """Process any remaining injected messages as a new query."""
+        if self._runner._injected_messages:
+            next_message = self._runner._injected_messages.pop(0)
             self._query_task = asyncio.create_task(self._run_query(next_message))
 
     async def _send_auto_context_info(self) -> None:
@@ -436,6 +460,7 @@ class IPCBridge:
                 "agent_type": event.metadata.get("agent_type", "unknown"),
                 "description": event.metadata.get("description", ""),
                 "prompt": event.metadata.get("prompt", ""),
+                "is_background": event.metadata.get("is_background", False),
             }
 
         elif event.type == "agent_result":
@@ -691,7 +716,9 @@ class IPCBridge:
         updates so the frontend can display background task notifications.
         Also streams real-time output for running tasks via TASK_OUTPUT events.
 
-        The model-side waiting is handled by QueryRunner._await_background_tasks().
+        When a task completes, the result is injected into the model context
+        (via _injected_messages if a query is running, or as a new query if not)
+        so the model can reference it without calling TaskOutput.
         """
         from ..tasks.registry import get_task_registry
         from ..tasks.types import TaskStatus, TaskType
@@ -699,6 +726,11 @@ class IPCBridge:
 
         seen_task_ids: set[str] = set()
         task_output_cache: dict[str, str] = {}  # task_id -> last output for change detection
+        # Track agent batches: wait for all agents in a batch to complete
+        # before injecting results, so the model gets one summary not N.
+        # A "batch" = all LOCAL_AGENT tasks that are running or recently finished.
+        agent_batch_ids: set[str] = set()  # IDs of agents in the current batch
+        agent_batch_results: list[str] = []  # accumulated results for the batch
 
         async def _poll_tasks() -> None:
             while True:
@@ -752,6 +784,9 @@ class IPCBridge:
                                         "description": desc,
                                     },
                                 )
+                                # Track agent batch from start, not completion
+                                if task.type == TaskType.LOCAL_AGENT:
+                                    agent_batch_ids.add(task.id)
 
                     # Stream output for running tasks
                     for task in registry.list_all():
@@ -805,6 +840,53 @@ class IPCBridge:
                                     "description": desc,
                                 })
 
+                                # Shell tasks: inject into context if query running
+                                # Agent tasks: collect results, wait for batch completion
+                                if task.type == TaskType.LOCAL_AGENT:
+                                    status_label = "完成" if task.status == TaskStatus.COMPLETED else f"失败({task.status.value})"
+                                    agent_batch_results.append(
+                                        f"- Agent {task.id} ({desc}): {status_label}\n"
+                                        f"{result_preview}"
+                                    )
+                                else:
+                                    # Shell task — inject into context if query running
+                                    if self._is_query_running:
+                                        status_label = "完成" if task.status == TaskStatus.COMPLETED else f"失败({task.status.value})"
+                                        inject_text = (
+                                            f"[后台任务完成通知]\n"
+                                            f"- Shell {task.id} ({desc}): {status_label}\n"
+                                            f"{result_preview}"
+                                        )
+                                        self._runner._injected_messages.append(inject_text)
+
+                    # Check if all agents in the batch have completed
+                    if agent_batch_ids:
+                        all_done = True
+                        has_non_killed_result = False
+                        for tid in list(agent_batch_ids):
+                            t = registry.get(tid)
+                            if t is None or not t.is_terminal():
+                                all_done = False
+                                break
+                            if t.status != TaskStatus.KILLED:
+                                has_non_killed_result = True
+                        if all_done and has_non_killed_result:
+                            # All agents in batch are done — start a new query
+                            # to let the model summarize results for the user
+                            if agent_batch_results:
+                                inject_text = (
+                                    "以下是后台 Agent 任务的执行结果，请汇总输出给用户：\n\n"
+                                    + "\n\n".join(agent_batch_results)
+                                )
+                                if self._is_query_running:
+                                    self._runner._injected_messages.append(inject_text)
+                                else:
+                                    self._query_task = asyncio.create_task(
+                                        self._run_query(inject_text)
+                                    )
+                            agent_batch_ids.clear()
+                            agent_batch_results.clear()
+
                     # Evict old terminal tasks
                     registry.evict_terminal()
 
@@ -812,6 +894,14 @@ class IPCBridge:
                     logger.exception("Task poll error")
 
         asyncio.create_task(_poll_tasks())
+
+        # Expose a cleanup callback so /clear can reset poller state
+        def _clear_state():
+            seen_task_ids.clear()
+            task_output_cache.clear()
+            agent_batch_ids.clear()
+            agent_batch_results.clear()
+        self._clear_task_poller_state = _clear_state
 
     # ── Stall watchdog callback ───────────────────────────────────────────────
 
@@ -870,7 +960,8 @@ class IPCBridge:
             task._asyncio_task.cancel()
 
         # Update task status
-        registry.update(task_id, status="killed", result="Stopped by user")
+        from ..tasks.types import TaskStatus as TS
+        registry.update(task_id, status=TS.KILLED, result="Stopped by user")
 
     async def _handle_task_retain(self, task_id: str, retain: bool) -> None:
         """Handle TASK_RETAIN from frontend — mark a task to stay visible."""

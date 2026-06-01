@@ -70,7 +70,7 @@ class AgentTool(Tool):
         "使用 General 类型。"
         "Explore 用于快速代码库搜索，Plan 用于实现方案规划。"
         "禁止派发语义等价的 Agent：如果两个 Agent 的目标相同、结果会重叠，不要同时派发。"
-        "设置 run_in_background=true 可后台运行子 Agent，主流程会等待所有后台任务完成后继续。"
+        "设置 run_in_background=true 可后台运行子 Agent，主流程不会等待，后台完成后自动通知前端。启动后台 Agent 后直接继续回答用户问题，不要等待结果。"
     )
 
     def get_schema(self) -> dict[str, Any]:
@@ -111,15 +111,15 @@ class AgentTool(Tool):
                 },
                 "description": {
                     "type": "string",
-                    "description": "简短描述子 Agent 将要执行的任务（3-5个词）",
+                    "description": "本次派发的整体任务描述（3-5个词），并行派发多个 Agent 时写同一个描述概括总体目标，例如'搜索项目架构'",
                     "default": "",
                 },
                 "run_in_background": {
                     "type": "boolean",
                     "description": (
                         "设为 true 在后台运行子 Agent，不阻塞当前对话。"
-                        "子 Agent 完成后，结果会自动注入主流程继续生成。"
-                        "适用于需要多轮工具调用、执行时间较长的子 Agent。"
+                        "启动后主流程立即继续，后台完成后自动通知前端。"
+                        "不要等待后台 Agent 结果，直接继续回答用户问题。"
                     ),
                     "default": False,
                 },
@@ -227,14 +227,16 @@ class AgentTool(Tool):
                         output=f"子 Agent 执行超时（{_FG_TIMEOUT}秒），请简化任务或拆分为更小的子任务",
                         error=True,
                     )
-                # Attach the user prompt to agent_start for frontend display
+                # Attach metadata to agent_start for frontend display
                 if event.type == "agent_start":
                     event.metadata["prompt"] = prompt
+                    event.metadata["description"] = task_description or prompt[:50]
+                    event.metadata["is_background"] = False
                     agent_id = event.metadata.get("agent_id", "")
-                # Stream events directly to IPC for real-time display
+                # Stream lifecycle events directly to IPC for real-time display
+                # Skip tool_use/tool_result — agent_group shows aggregate status
                 if emit_ipc is not None and event.type in (
-                    "agent_start", "agent_result", "text",
-                    "tool_use", "tool_result", "error",
+                    "agent_start", "agent_result", "text", "error",
                 ):
                     logger.debug("AgentTool: forwarding event type=%s source=%s", event.type, event.source)
                     await emit_ipc(event)
@@ -282,8 +284,9 @@ class AgentTool(Tool):
     ) -> ToolResult:
         """Run agent in background — register in TaskRegistry, return immediately.
 
-        The agent runs asynchronously. The main query loop will wait for
-        all background tasks to complete and inject results before finishing.
+        The agent runs asynchronously. The main query loop does NOT wait for
+        background tasks — it continues immediately. Results are displayed
+        on the frontend via IPC events when the agent completes.
         """
         registry = get_task_registry()
         task_id = generate_task_id(TaskType.LOCAL_AGENT)
@@ -313,6 +316,7 @@ class AgentTool(Tool):
                 ctx=ctx,
                 semantic_key=semantic_key,
                 emit_ipc=emit_ipc,
+                task_description=task_description,
                 total_timeout=_TIMEOUT,
             )
         )
@@ -334,6 +338,7 @@ class AgentTool(Tool):
         ctx: Any,
         semantic_key: str,
         emit_ipc: Any,
+        task_description: str = "",
         total_timeout: int = 600,
     ) -> None:
         """Run agent in background and update task registry on completion.
@@ -375,6 +380,8 @@ class AgentTool(Tool):
                 # Forward lifecycle events for frontend display
                 if event.type == "agent_start":
                     event.metadata["prompt"] = prompt
+                    event.metadata["description"] = task_description or prompt[:50]
+                    event.metadata["is_background"] = True
                     bg_agent_id = event.metadata.get("agent_id", "")
                 if emit_ipc is not None and event.type in (
                     "agent_start", "agent_result", "error",
@@ -413,10 +420,13 @@ class AgentTool(Tool):
                         return
         except asyncio.CancelledError:
             registry.update(task_id, status=TaskStatus.KILLED, result="Cancelled")
+            partial_result = "".join(text_parts).strip() or "Cancelled"
+            await self._emit_agent_result(emit_ipc, bg_agent_id, agent_def.agent_type, tool_use_count, partial_result)
             _remove_from_running(agent_def.agent_type, semantic_key, prompt)
             return
         except Exception as e:
             registry.update(task_id, status=TaskStatus.FAILED, result=str(e))
+            await self._emit_agent_result(emit_ipc, bg_agent_id, agent_def.agent_type, tool_use_count, str(e))
             _remove_from_running(agent_def.agent_type, semantic_key, prompt)
             return
 
@@ -424,6 +434,7 @@ class AgentTool(Tool):
             logger.warning("Background agent %s timed out after %ds", task_id, total_timeout)
             registry.update(task_id, status=TaskStatus.FAILED,
                             result=f"后台 Agent 执行超时（{total_timeout}秒）")
+            await self._emit_agent_result(emit_ipc, bg_agent_id, agent_def.agent_type, tool_use_count, "执行超时")
             _remove_from_running(agent_def.agent_type, semantic_key, prompt)
             return
 
@@ -431,7 +442,27 @@ class AgentTool(Tool):
         logger.info("Background agent %s completed (type=%s, result_len=%d)",
                      task_id, agent_def.agent_type, len(result))
         registry.update(task_id, status=TaskStatus.COMPLETED, result=result)
+        await self._emit_agent_result(emit_ipc, bg_agent_id, agent_def.agent_type, tool_use_count, result)
         _remove_from_running(agent_def.agent_type, semantic_key, prompt)
+
+    async def _emit_agent_result(self, emit_ipc: Any, agent_id: str | None, agent_type: str, tool_use_count: int, result: str = "") -> None:
+        """Emit agent_result event so frontend agent_group updates status."""
+        if emit_ipc is None:
+            return
+        try:
+            from ..query import QueryEvent
+            await emit_ipc(QueryEvent(
+                type="agent_result",
+                content=result[:2000] if result else "",
+                metadata={
+                    "agent_id": agent_id or "",
+                    "agent_type": agent_type,
+                    "tool_use_count": tool_use_count,
+                },
+                source="agent",
+            ))
+        except Exception:
+            logger.debug("emit_ipc failed for agent_result", exc_info=True)
 
     def is_concurrency_safe(self, params: dict[str, Any]) -> bool:
         return True

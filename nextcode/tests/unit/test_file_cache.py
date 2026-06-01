@@ -79,6 +79,33 @@ class TestFileStateCacheRecordRead:
         cache.record_read("/tmp/big.py", large_content)
         assert cache.entry_count == 0
 
+    def test_record_read_no_downgrade_full_to_partial(self):
+        """Full read followed by partial read of same content keeps full view."""
+        cache = FileStateCache()
+        cache.record_read("/tmp/a.py", "content of a")
+        assert cache._entries["/tmp/a.py"].is_partial_view is False
+
+        cache.record_read("/tmp/a.py", "content of a", offset=1, limit=50)
+        assert cache._entries["/tmp/a.py"].is_partial_view is False
+
+    def test_record_read_partial_to_full_upgrade(self):
+        """Partial read followed by full read upgrades to full view."""
+        cache = FileStateCache()
+        cache.record_read("/tmp/a.py", "content of a", offset=1, limit=1)
+        assert cache._entries["/tmp/a.py"].is_partial_view is True
+
+        cache.record_read("/tmp/a.py", "content of a")
+        assert cache._entries["/tmp/a.py"].is_partial_view is False
+
+    def test_record_read_full_then_content_changed_partial(self):
+        """Full read then partial read with changed content is allowed."""
+        cache = FileStateCache()
+        cache.record_read("/tmp/a.py", "old content")
+        assert cache._entries["/tmp/a.py"].is_partial_view is False
+
+        cache.record_read("/tmp/a.py", "new content", offset=1, limit=5)
+        assert cache._entries["/tmp/a.py"].is_partial_view is True
+
 
 class TestFileStateCacheRecordEdit:
     """Tests for record_edit and record_write."""

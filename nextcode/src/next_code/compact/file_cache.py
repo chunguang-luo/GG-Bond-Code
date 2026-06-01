@@ -74,10 +74,17 @@ class FileStateCache:
 
         is_partial = self._is_actually_partial(content, offset, limit)
 
-        # Remove old entry if exists (updates position + size)
+        # If the file was already fully read and content hasn't changed,
+        # don't downgrade to partial view — just refresh the timestamp
         if path in self._entries:
-            old = self._entries.pop(path)
+            old = self._entries[path]
+            if not old.is_partial_view and old.content == content:
+                self._entries.move_to_end(path)
+                old.timestamp = time.monotonic()
+                old.was_edited = False
+                return
             self._current_size_bytes -= len(old.content.encode("utf-8", errors="replace"))
+            self._entries.pop(path)
 
         entry = FileStateEntry(
             path=path,

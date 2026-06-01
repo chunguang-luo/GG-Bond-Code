@@ -100,6 +100,10 @@ class QueryRunner:
         self._loop_state = LoopState()
         self._warning_manager = CompactWarningManager()
 
+        # Injected user messages — appended mid-conversation by IPCBridge
+        # when the user submits a new question while a query is running.
+        self._injected_messages: list[str] = []
+
         # Session Memory — track for extraction triggers
         self._session_memory_state = SessionMemoryState()
         self._session_memory_manager = SessionMemoryManager()
@@ -414,17 +418,14 @@ class QueryRunner:
                         ]
                     messages.append(msg)
 
-                # If no tool use, the model is about to finish.
-                # Before exiting, wait for any background tasks and inject results.
+                # Check for injected user messages (new questions submitted while running)
+                if self._injected_messages:
+                    injected = self._injected_messages.pop(0)
+                    messages.append({"role": "user", "content": injected})
+                    yield QueryEvent(type="system", content=f"[用户追问: {injected[:50]}]")
+                    continue
+
                 if not has_tool_use:
-                    pending = await self._await_background_tasks()
-                    if pending:
-                        # Inject background task results so the model can
-                        # summarize or take follow-up action before finishing.
-                        messages.append({"role": "user", "content": pending})
-                        yield QueryEvent(type="thinking", content="[等待后台任务完成，继续生成]")
-                        # Don't count this as a new turn - just continue waiting
-                        continue
                     self._loop_state.set_transition(TransitionReason.DONE, detail="no tool use")
                     break
 
@@ -503,47 +504,6 @@ class QueryRunner:
                         "effective_window": warning.effective_window,
                     },
                 )
-
-    async def _await_background_tasks(self) -> str:
-        """Wait for running background tasks and return a summary of their results.
-
-        Returns an empty string if no tasks are running, or a formatted summary
-        of completed task results to inject as a user message.
-
-        Does NOT block — only collects results from tasks that have already
-        finished. Running tasks continue in the background and their results
-        can be retrieved later via the TaskOutput tool.
-        """
-        from .tasks.registry import get_task_registry
-        from .tasks.types import TaskType, TaskStatus
-
-        registry = get_task_registry()
-        running = registry.list_running()
-        if not running:
-            return ""
-
-        # Collect task IDs we're interested in
-        running_ids = {task.id for task in running}
-
-        # Check which tasks have already completed (non-blocking)
-        parts: list[str] = []
-        for task in registry.list_all():
-            if task.id not in running_ids:
-                continue
-            if not task.is_terminal():
-                # Still running — don't block, just note it
-                continue
-            type_label = "Agent" if task.type == TaskType.LOCAL_AGENT else "Shell"
-            status = "完成" if task.status == TaskStatus.COMPLETED else f"失败({task.status.value})"
-            desc = task.description or (task.command[:80] if hasattr(task, 'command') and task.command else "")
-            result = (task.result or "")[:2000]
-            parts.append(f"- {type_label} {task.id} ({desc}): {status}\n{result}")
-
-        if not parts:
-            # All tasks still running — don't block, let them finish in background
-            return ""
-
-        return "[后台任务结果]\n" + "\n\n".join(parts) + "\n\n请基于以上后台任务结果继续回答用户的问题。"
 
     async def _check_permission(self, tool_name: str, params: dict[str, Any]) -> PermissionDecision:
         """Check permission, invoking callback for ASK decisions."""

@@ -29,6 +29,15 @@ Glob, Grep, Read, and Bash (read-only commands only).
 - Focus on finding the answer as quickly as possible, not on reading entire files
 - Prefer targeted Grep over reading whole files
 
+## Stopping Rules
+- If 2 consecutive search rounds yield no new relevant information, \
+STOP and summarize what you have found so far
+- If you have searched more than 10 rounds without a clear answer, \
+STOP and report what you found and what remains uncertain
+- It is better to report "not found" than to search endlessly
+- Diminishing returns: each additional search should add significant new information — \
+if it does not, wrap up with current findings
+
 ## Memory Writing: When and How
 Write to your Agent Memory ONLY when you discover high-value, stable knowledge \
 that won't change during normal development.

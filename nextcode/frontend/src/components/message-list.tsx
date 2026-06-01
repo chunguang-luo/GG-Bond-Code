@@ -10,7 +10,7 @@ import { Markdown, StreamingMarkdown } from "../utils/markdown";
 
 export interface DisplayMessage {
   id: string;
-  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system" | "info" | "command" | "agent_start" | "agent_tool_use" | "agent_tool_result" | "agent_result" | "queued" | "task_notification";
+  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "warning" | "system" | "info" | "command" | "agent_group" | "agent_result" | "queued" | "task_notification";
   content: string;
   toolName?: string;
   toolInput?: Record<string, unknown>;
@@ -311,6 +311,20 @@ function DiffLines({ diff, columns }: { diff: string; columns: number }) {
   return <Box marginLeft={MARGIN_LEFT} flexDirection="column">{rendered}</Box>;
 }
 
+// ── Agent group status icons and colors ──────────────────────────────────────
+
+const STATUS_ICONS: Record<string, string> = {
+  running: "◼",
+  done: "✔",
+  failed: "✘",
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  running: "yellow",
+  done: "green",
+  failed: "red",
+};
+
 /** Hook that returns elapsed seconds since startMs, updating every second. */
 function useAgentElapsed(startMs: number | null): number {
   const [elapsed, setElapsed] = React.useState(0);
@@ -327,46 +341,74 @@ function useAgentElapsed(startMs: number | null): number {
   return elapsed;
 }
 
-/** Agent start message with live elapsed timer, updates to Done on completion. */
-function AgentStartItem({ msg }: { msg: DisplayMessage }) {
-  const agentMeta = msg.metadata as {
-    agent_type?: string; description?: string; prompt?: string;
-    _startMs?: number; _tool_use_count?: number;
-    _done?: boolean; _finalElapsed?: string;
+interface AgentEntry {
+  agent_id: string;
+  agent_type: string;
+  description: string;
+  status: "running" | "done" | "failed";
+  tool_use_count: number;
+  elapsed: string;
+  is_background: boolean;
+}
+
+/** Agent group — displays one or more sub-agents as a task list. */
+function AgentGroupItem({ msg }: { msg: DisplayMessage }) {
+  const meta = msg.metadata as {
+    _startMs?: number;
+    _title?: string;
+    _agents?: AgentEntry[];
+    _allDone?: boolean;
+    _finalElapsed?: string;
   } | undefined;
-  const rawType = agentMeta?.agent_type || "Agent";
-  const agentType = rawType === "General" ? "General Agent" : `${rawType} Agent`;
-  const agentPrompt = agentMeta?.prompt || "";
-  const startMs = agentMeta?._startMs || null;
-  const toolCount = agentMeta?._tool_use_count || 0;
-  const isDone = agentMeta?._done || false;
-  const finalElapsed = agentMeta?._finalElapsed || "";
+  const agents = meta?._agents || [];
+  const title = meta?._title || "";
+  const isDone = meta?._allDone || false;
+  const startMs = meta?._startMs || null;
+  const finalElapsed = meta?._finalElapsed || "";
   const elapsedMs = useAgentElapsed(isDone ? null : startMs);
+  const single = agents.length === 1;
+  // Title from Agent tool's "description" param — the overall task description
+
   return (
     <Box marginTop={1} marginLeft={2} flexDirection="column">
       <Box>
-        <Text color="magenta" bold>{`⏎ ${agentType}`}</Text>
-        {isDone && finalElapsed && <Text dimColor>{` (${finalElapsed})`}</Text>}
-        {!isDone && elapsedMs > 0 && <Text dimColor>{` (${formatMs(elapsedMs)})`}</Text>}
-      </Box>
-      <Box marginLeft={2}>
-        {isDone ? (
+        {single ? (
+          // Single agent: "⏎ Explore Agent (5s)"
           <>
-            <Text dimColor>⎿  Done</Text>
-            <Text dimColor>{` · ${toolCount} tools used`}</Text>
+            <Text color="magenta" bold>{`⏎ ${agents[0].agent_type === "General" ? "General Agent" : `${agents[0].agent_type} Agent`}`}</Text>
+            {isDone && agents[0].elapsed && <Text dimColor>{` (${agents[0].elapsed})`}</Text>}
+            {!isDone && elapsedMs > 0 && <Text dimColor>{` (${formatMs(elapsedMs)})`}</Text>}
           </>
         ) : (
+          // Multiple agents: "⏎ 搜索项目架构 running (1m 23s)"
+          // Fallback to "N Agents" if no title from Agent tool description
           <>
-            <Text dimColor>⎿  Running</Text>
-            <Text dimColor>{` · ${toolCount} tools used`}</Text>
+            <Text color="magenta" bold>{`⏎ ${title || agents.length + " Agents"}`}</Text>
+            {!isDone && <Text color="yellow">{` running`}</Text>}
+            {isDone && finalElapsed && <Text dimColor>{` (${finalElapsed})`}</Text>}
+            {!isDone && elapsedMs > 0 && <Text dimColor>{` (${formatMs(elapsedMs)})`}</Text>}
           </>
         )}
       </Box>
-      {agentPrompt && (
-        <Box marginLeft={4}>
-          <Text dimColor>{agentPrompt}</Text>
+      {/* Agent task list */}
+      {agents.map((agent, idx) => (
+        <Box key={agent.agent_id || idx} marginLeft={2}>
+          <Text dimColor>{"⎿ "}</Text>
+          <Text color={STATUS_COLORS[agent.status]}>{STATUS_ICONS[agent.status]} </Text>
+          <Text
+            dimColor={agent.status === "done"}
+            bold={agent.status === "running"}
+          >
+            {agent.description}
+          </Text>
+          {agent.is_background && agent.status === "running" && (
+            <Text dimColor color="gray"> (bg)</Text>
+          )}
+          {agent.status === "done" && agent.elapsed && (
+            <Text dimColor>{` (${agent.elapsed})`}</Text>
+          )}
         </Box>
-      )}
+      ))}
     </Box>
   );
 }
@@ -448,8 +490,8 @@ function MessageItem({ msg, columns }: { msg: DisplayMessage; columns: number })
     }
 
     case "tool_use": {
-      // Agent tool: skip rendering — agent_start will show type + prompt
-      if (msg.toolName === "Agent") {
+      // Agent/TaskOutput: skip rendering — agent_group shows status
+      if (msg.toolName === "Agent" || msg.toolName === "TaskOutput") {
         return null;
       }
       const label = formatToolLabel(msg.toolName || "Tool", msg.toolInput);
@@ -477,7 +519,7 @@ function MessageItem({ msg, columns }: { msg: DisplayMessage; columns: number })
         );
       }
       // Agent tool results: 只显示 Done + 耗时
-      if (msg.toolName === "Agent") {
+      if (msg.toolName === "Agent" || msg.toolName === "TaskOutput") {
         return null;
       }
       // Edit/Write: show diff stats + diff content
@@ -531,52 +573,14 @@ function MessageItem({ msg, columns }: { msg: DisplayMessage; columns: number })
       );
     }
 
-    case "agent_start": {
-      return <AgentStartItem msg={msg} />;
-    }
-
-    case "agent_tool_use": {
-      const label = formatToolLabel(msg.toolName || "Tool", msg.toolInput);
-      return (
-        <Box marginLeft={4}>
-          <Text color="magenta" dimColor>{"  "}⚙ </Text>
-          <Text dimColor>{label}</Text>
-        </Box>
-      );
-    }
-
-    case "agent_tool_result": {
-      const elapsed = formatElapsed(msg.elapsedMs);
-      const elapsedStr = elapsed ? ` (${elapsed})` : "";
-      if (msg.toolError) {
-        return (
-          <Box marginLeft={6}>
-            <Text color="red" dimColor>⎿  {msg.toolName || "Error"}: {elapsedStr || "failed"}</Text>
-          </Box>
-        );
-      }
-      const summary = msg.toolResult ? formatToolResult(msg.toolResult) : "Done";
-      return (
-        <Box marginLeft={6}>
-          <Text dimColor>⎿  {msg.toolName}: {summary}{elapsedStr}</Text>
-        </Box>
-      );
+    case "agent_group": {
+      return <AgentGroupItem msg={msg} />;
     }
 
     case "agent_result": {
-      const resultMeta = msg.metadata as { _elapsed?: string; agent_type?: string; tool_use_count?: number } | undefined;
-      const rawType = resultMeta?.agent_type || "Agent";
-      const agentType = rawType === "General" ? "General Agent" : `${rawType} Agent`;
-      const elapsed = resultMeta?._elapsed || "";
-      const toolCount = resultMeta?.tool_use_count || 0;
-      return (
-        <Box marginLeft={2}>
-          <Text color="magenta" bold>{`⏎ ${agentType}`}</Text>
-          <Text dimColor> Done.</Text>
-          {elapsed && <Text dimColor>{` (${elapsed})`}</Text>}
-          {toolCount > 0 && <Text dimColor>{` · ${toolCount} tools used`}</Text>}
-        </Box>
-      );
+      // Agent result messages are now rendered inside AgentGroupItem.
+      // Keep this case for backwards compatibility with old messages.
+      return null;
     }
 
     case "task_notification": {
