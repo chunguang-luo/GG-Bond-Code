@@ -238,9 +238,9 @@ async def _cleanup_agent(agent_id: str, context: ToolUseContext) -> None:
     if hasattr(context, "file_cache") and context.file_cache is not None:
         context.file_cache.clear()
 
-    # 2. 杀死后台 bash 任务 — 后续迭代
-    # kill_shell_tasks_for_agent(agent_id, context)
-
-    # 3. 清理 AppState 中的 todos — 后续迭代
+    # 2. 杀死该 Agent 创建的后台任务（防止僵尸进程）
+    from ..tasks.registry import get_task_registry
+    registry = get_task_registry()
+    await registry.kill_for_agent(agent_id)
 
     logger.debug("Agent %s cleaned up", agent_id)

@@ -1,8 +1,9 @@
 # NextCode
 
-用 Python 重新实现 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI 的核心主流程，保留架构精髓，去掉企业级复杂度。
+AI Agent代码助手，保留Agent核心架构设计机制，去掉企业级复杂度。支持读取、编辑、创建文件，搜索代码库，运行 Shell 命令，修 Bug、加功能、做代码审查；支持并行派发多个子 Agent 处理独立任务，后台执行长时间构建/测试并自动汇总结果；内置上下文压缩（MICRO/FULL/BLOCKING 三级压缩 + 9 维摘要）和持久化记忆管理（4 种 Memory 类型 + Dream 自动整合），5 种 Agent（Explore/Plan/Verification/Guide/General）覆盖代码探索、架构规划、对抗审查、功能导航和通用任务；通过 MCP 扩展连接外部工具服务器，8 阶段权限管线保障执行安全。
 
-[![Python 版本](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
+
+[![Python 版本](https://img.shields.io/badge/python-3.13%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![代码风格](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
@@ -10,17 +11,19 @@
 
 - **Ink 终端 UI** — React + Ink 前端，双进程 IPC 架构，Python 后端 + Node.js 前端，Unix Domain Socket 双向 JSON-Line 通信
 - **多模型支持** — DeepSeek / Claude / MiniMax，自动选择 API 后端
-- **Agent 系统** — 内置 Explore/Plan/General-Purpose Agent，支持自定义 Agent，工具过滤、上下文隔离
-- **Skill 系统** — Markdown → PromptCommand 转换，前置条件激活，懒惰加载
-- **核心工具集** — Bash、FileRead、FileEdit、FileWrite、Glob、Grep
-- **流式工具执行** — 并发分区执行 + 流式输出
-- **上下文压缩** — 三级压缩（MICRO / FULL / BLOCKING）+ 断路器保护
-- **命令系统** — `/help`、`/clear`、`/compact`、`/context`、`/thinking`、`/model`、`/log`、`/exit`，支持 Tab 补全和相似命令提示
-- **权限系统** — 工具执行 allow/deny 控制，交互式确认，通配符授权持久化
-- **Prompt Cache** — 静态/动态 System Prompt 分割 + 工具 Schema 缓存
-- **API 韧性** — 指数退避重试 + 错误恢复策略 + 超时保护
-- **Thinking 展示** — 实时流式显示思考过程，`/thinking` 命令切换
-- **分层配置** — 全局 + 项目级配置，环境变量覆盖
+- **Agent 系统** — 5 种内置 Agent（Explore/Plan/Verification/Guide/General），后台执行 + 语义去重 + 批量汇总，支持自定义 Agent，3 层工具过滤、上下文隔离、6 阶段生命周期
+- **MCP 扩展** — 5 种传输类型（stdio/SSE/HTTP/WebSocket/SDK），OAuth 2.0 + PKCE 认证，headersHelper 动态鉴权，自动重连（指数退避），企业策略管控，并发连接调度
+- **Skill 系统** — Markdown → PromptCommand 转换，条件激活（路径匹配），懒惰加载，目录发现
+- **核心工具集** — Bash、Read、Edit、Write、Glob、Grep、Agent、TaskStop、TaskOutput，MCP 工具自动代理注册
+- **流式工具执行** — 并发分区执行 + 流式输出，contextvars 安全注入
+- **上下文压缩** — 三级压缩（MICRO / FULL / BLOCKING）+ 断路器保护 + 9 维结构化摘要 + 文件状态重注入
+- **Memory 系统** — 4 种类型（user/feedback/project/reference），相关性打分，老化淘汰，Dream 自动整合，Agent Memory 3 范围（user/project/local）
+- **任务系统** — 后台 Bash/Agent 任务，磁盘输出（5GB 上限），看门狗交互检测，60s 自动驱逐，僵尸进程防护
+- **命令系统** — `/help`、`/clear`、`/compact`、`/context`、`/thinking`、`/model`、`/log`、`/memory`、`/summary`、`/dangerous-bg-no-ask`、`/exit`，支持 Tab 补全和相似命令提示
+- **权限系统** — 8 阶段决策管线，5 种模式循环，Shell 规则匹配（精确/前缀/通配符），路径安全校验，断路器防护
+- **Prompt Cache** — 静态/动态 System Prompt 分割 + 工具 Schema 字节一致性缓存，最大化 Anthropic KV Cache 命中
+- **API 韧性** — 指数退避重试 + 错误恢复策略（MaxOutputTokens 自动降级）+ 超时保护
+- **分层配置** — 4 级优先级（默认 → 全局 → 项目 → 环境变量），Settings ↔ Store 双向同步
 
 ## 快速开始
 
@@ -77,12 +80,14 @@ nextcode config
 | 命令 | 说明 |
 |------|------|
 | `/help` | 显示帮助信息和可用命令列表 |
-| `/clear` | 清空对话历史 |
-| `/compact` | 压缩对话历史（模型摘要 + 保留近期消息） |
+| `/clear` | 清空对话历史和任务状态 |
+| `/compact` | 压缩对话历史（9 维结构化摘要 + 保留近期消息） |
 | `/context` | 显示上下文窗口使用情况 |
 | `/thinking` | 切换 Thinking 内容显示 |
 | `/model` | 显示当前使用的模型 |
 | `/log` | 显示对话循环状态日志 |
+| `/memory` | 查看/列出/查询 Agent Memory |
+| `/summary` | 显示会话摘要 |
 | `/exit` `/quit` | 退出 REPL |
 
 > 输入 `/` 后按 Tab 键可补全命令。输入错误命令时会提示相似命令。
@@ -98,6 +103,10 @@ nextcode config
 | `Edit` | 编辑文件（字符串替换） | 需确认 |
 | `Write` | 写入文件 | 需确认 |
 | `Agent` | 调用子 Agent 执行复杂任务 | 需确认 |
+| `TaskStop` | 停止后台任务 | 允许 |
+| `TaskOutput` | 获取后台任务输出 | 允许 |
+| `Skill` | 调用 Skill 命令 | 允许 |
+| `mcp__*` | MCP 工具（自动代理注册） | 需确认 |
 
 ## Agent 系统
 
@@ -105,9 +114,20 @@ nextcode config
 
 | Agent | 说明 | 禁用工具 |
 |-------|------|----------|
-| `Explore` | 快速代码库搜索专家，按模式查找文件、搜索关键词、回答代码库问题 | Edit, Write, NotebookEdit, Agent |
-| `Plan` | 软件架构规划专家，设计实现方案，识别关键文件，考虑架构权衡 | Edit, Write, NotebookEdit |
-| `general-purpose` | 通用型 Agent，处理复杂多步骤任务 | 无 |
+| `Explore` | 快速代码库搜索专家，按模式查找文件、搜索关键词 | Edit, Write, Agent |
+| `Plan` | 软件架构规划专家，4 步结构化规划，考虑替代方案 | Edit, Write |
+| `Verification` | 对抗性代码审查，PASS/FAIL/PARTIAL 结果 | Edit, Write |
+| `Guide` | NextCode 功能导航，动态注入 skills & MCP 信息 | Edit, Write, Bash, Agent |
+| `General` | 通用型 Agent，完整工具访问，可派生子 Agent | 无 |
+
+### Agent 调度机制
+
+- **语义去重**：`intent + target` 防止重复派发同一任务
+- **并发控制**：最多 5 个后台 Agent 同时运行
+- **嵌套限制**：最大 2 层 Agent 嵌套
+- **后台执行**：Agent 后台运行不阻塞主流程，批量完成后自动汇总
+- **生命周期**：6 阶段（初始化 → 权限 → MCP → 上下文隔离 → 对话循环 → 清理）
+- **僵尸防护**：Agent 退出时自动终止其创建的后台任务
 
 ### 自定义 Agent
 
@@ -187,6 +207,106 @@ paths: ["frontend/**/*", "src/**/*.tsx", "src/**/*.jsx"]
 
 支持渐进式 Skill 目录发现，从文件路径向上查找 `.nextcode/skills/`，适用于 monorepo 结构。
 
+## MCP 扩展
+
+NextCode 支持 [Model Context Protocol](https://modelcontextprotocol.io/)，可连接外部工具和数据服务器扩展能力。
+
+### 传输类型
+
+| 类型 | 说明 | 适用场景 |
+|------|------|---------|
+| `stdio` | 本地子进程通信 | 本地工具服务器（如 filesystem、git） |
+| `sse` | Server-Sent Events | 远程 HTTP 服务器 |
+| `http` | Streamable HTTP | 远程 HTTP 服务器（推荐） |
+| `ws` | WebSocket | 双向实时通信 |
+| `sdk` | 进程内 SDK | 内嵌式集成 |
+
+### 配置方式
+
+MCP 服务器配置支持 5 个来源，优先级从低到高：
+
+| 来源 | 配置文件 | 优先级 |
+|------|---------|--------|
+| 项目级 | `.mcp.json` | 低 |
+| 用户级 | `~/.nextcode/.settings.json` | 中 |
+| 本地 | `.nextcode/.settings.local.json` | 中高 |
+| 动态 | `--mcp-config` CLI 参数 | 高 |
+| 企业 | `managed-mcp.json`（独占模式） | 最高 |
+
+**stdio 示例**（`.mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+    }
+  }
+}
+```
+
+**HTTP 示例**：
+
+```json
+{
+  "mcpServers": {
+    "remote-api": {
+      "type": "http",
+      "url": "https://api.example.com/mcp",
+      "headers": { "Authorization": "Bearer token" }
+    }
+  }
+}
+```
+
+### OAuth 2.0 认证
+
+远程 MCP 服务器支持 OAuth 2.0 + PKCE 认证流程：
+
+1. 自动发现 OAuth 端点（RFC 8414 / RFC 9728）
+2. 动态客户端注册（RFC 7591，无 client_id 时）
+3. PKCE 授权码流程（S256 code_challenge）
+4. 浏览器授权 → 回调获取 token
+5. Token 自动刷新，安全存储（`~/.nextcode/mcp-tokens/`）
+
+```json
+{
+  "type": "http",
+  "url": "https://api.example.com/mcp",
+  "oauth": {
+    "resource_url_url": "https://api.example.com/.well-known/oauth-protected-resource"
+  }
+}
+```
+
+### headersHelper 动态鉴权
+
+对于需要动态 token 的服务（如云厂商临时凭证），可指定脚本路径自动获取鉴权头：
+
+```json
+{
+  "type": "http",
+  "url": "https://api.example.com/mcp",
+  "headersHelper": "./scripts/get-auth-headers.sh"
+}
+```
+
+脚本输出格式：每行 `Header-Name: value`，每次连接前自动执行。
+
+### 自动重连
+
+连接断开时自动重连，指数退避：1s → 2s → 4s → 8s → 16s（最大 30s），最多 5 次尝试。
+会话过期（404 + -32001）立即重连，不计入退避计数。
+
+### 企业策略
+
+支持 `allowedMcpServers` / `deniedMcpServers` 策略管控：
+- 按名称精确匹配、按命令匹配（stdio）、按 URL 通配符匹配
+- 拒绝列表优先级高于允许列表
+- 企业独占模式下仅加载企业配置，忽略所有其他来源
+
 ## 配置
 
 ### 配置优先级
@@ -244,7 +364,7 @@ paths: ["frontend/**/*", "src/**/*.tsx", "src/**/*.jsx"]
 
 | 层级 | 技术选型 |
 |------|---------|
-| **后端** | Python 3.12+ |
+| **后端** | Python 3.13+ |
 | **CLI 框架** | Click |
 | **终端 UI** | React 18 + Ink 5 |
 | **Schema 验证** | Pydantic |
@@ -281,19 +401,39 @@ nextcode/
     │   ├── agent_tool.py         # Agent 调用工具
     │   └── skill.py              # Skill 调用工具
     ├── commands/                 # 命令系统（注册/调度/补全）
-    ├── compact/                  # 上下文压缩（MICRO/FULL/BLOCKING）
-    ├── permissions/              # 权限管理
-    ├── prompts/                  # System Prompt 组装
+    ├── compact/                  # 上下文压缩（MICRO/FULL/BLOCKING）+ 文件状态缓存
+    ├── permissions/              # 权限管理（8 阶段管线 + 5 种模式）
+    ├── prompts/                  # System Prompt 组装（静态/动态分割）
     ├── state/                    # 状态管理（Store + ToolUseContext）
     ├── ipc/                      # IPC 桥接（Python ↔ Ink）
     ├── context/                  # 系统/用户上下文
     ├── agents/                   # Agent 系统
     │   ├── definition.py         # Agent 定义数据蓝图
-    │   ├── runner.py            # runAgent() 生命周期引擎
+    │   ├── runner.py             # runAgent() 6 阶段生命周期引擎
     │   ├── builtins.py           # 内置 Agent 注册
     │   ├── loader.py             # 自定义 Agent 加载
     │   ├── markdown_parser.py    # Markdown 解析
     │   └── prompts/              # Agent 专用提示词
+    ├── tasks/                    # 任务系统
+    │   ├── registry.py           # 单例注册表（注册/终止/驱逐/僵尸防护）
+    │   ├── disk_output.py        # 异步写队列（5GB 上限）
+    │   └── stall_watchdog.py     # 交互式命令卡住检测（45s）
+    ├── mcp/                      # MCP 扩展
+    │   ├── manager.py            # 连接管理（并发调度/重连/OAuth 检测）
+    │   ├── client.py             # MCP 协议客户端
+    │   ├── config.py             # 多源配置加载/去重/合并
+    │   ├── auth.py               # OAuth 2.0 + PKCE 认证
+    │   ├── headers_helper.py     # 动态鉴权脚本执行
+    │   ├── tool_proxy.py         # MCP 工具 → 内置 Tool 接口代理
+    │   ├── naming.py             # mcp__<server>__<tool> 命名规则
+    │   ├── transport.py          # stdio 传输
+    │   ├── transport_http.py     # Streamable HTTP 传输
+    │   └── transport_sse.py      # SSE 传输
+    ├── memory/                   # Memory 系统
+    │   ├── extract.py            # 后台提取 Agent
+    │   ├── relevant.py           # 相关性打分 + 选择
+    │   ├── dream.py              # 自动整合/合并/修剪
+    │   └── agent_memory.py       # Agent Memory 3 范围
     └── skills/                   # Skill 系统
         ├── frontmatter.py        # YAML frontmatter 解析
         ├── loader.py             # Skill 目录加载
@@ -316,9 +456,12 @@ nextcode/
 │  ├── tools/        文件操作、shell 执行、Agent/Skill 调用   │
 │  ├── commands/     斜杠命令 + PromptCommand                 │
 │  ├── compact/      上下文压缩 (MICRO/FULL/BLOCKING)        │
-│  ├── permissions/  权限管理                                  │
+│  ├── permissions/  权限管理 (8 阶段管线 + 5 种模式)         │
 │  ├── state/        全局状态存储 + ToolUseContext            │
 │  ├── agents/       Agent 定义、运行器、加载器               │
+│  ├── tasks/        后台任务注册、磁盘输出、看门狗            │
+│  ├── mcp/          MCP 连接管理、工具代理、OAuth 认证        │
+│  ├── memory/       Memory 提取、相关性打分、Dream 整合      │
 │  ├── skills/      Skill 加载、frontmatter、条件激活        │
 │  └── ipc/          Unix Socket IPC 桥接                      │
 └─────────────────────────────────────────────────────────────┘
@@ -357,7 +500,8 @@ run_agent()
     │   └── agent_start / agent_result 事件
     │
     └── Phase 6: 清理
-        └── 释放文件缓存等资源
+        ├── 释放文件缓存
+        └── 终止后台任务（僵尸防护）
 ```
 
 ### Skill 加载流程
@@ -484,19 +628,22 @@ Context window full. Use /compact to manually compress the conversation.
 | 对话循环 + 工具执行 | ✅ |
 | 流式输出 | ✅ |
 | 流式工具执行（并发分区） | ✅ |
-| 权限系统 + 持久化 | ✅ |
+| 权限系统（8 阶段管线 + 5 种模式 + 断路器） | ✅ |
 | 上下文压缩（MICRO/FULL/BLOCKING） | ✅ |
-| Prompt Cache | ✅ |
+| Prompt Cache（静态/动态分割 + Schema 缓存） | ✅ |
 | API 重试 + 超时 + 恢复策略 | ✅ |
-| 工具安全执行 | ✅ |
+| 工具安全执行（Bash 安全管线 + 路径校验） | ✅ |
 | Thinking 展示 | ✅ |
-| 状态管理（Store + ToolUseContext） | ✅ |
-| Agent 系统（Explore/Plan/General-Purpose） | ✅ |
-| 自定义 Agent 支持 | ✅ |
-| Agent 工具过滤与上下文隔离 | ✅ |
+| 状态管理（Store + ToolUseContext + 依赖注入） | ✅ |
+| Agent 系统（5 种内置 + 自定义 + 后台执行 + 语义去重） | ✅ |
+| Agent 工具过滤（3 层）与上下文隔离 | ✅ |
+| Agent 僵尸防护（退出清理后台任务） | ✅ |
+| 任务系统（注册/终止/驱逐/磁盘输出/看门狗） | ✅ |
 | Skill 系统（Markdown → PromptCommand） | ✅ |
-| Skill 懒惰加载 | ✅ |
-| Skill 条件激活 | ✅ |
+| Skill 懒惰加载 + 条件激活 | ✅ |
+| MCP 扩展（5 种传输 + OAuth + 重连 + 企业策略） | ✅ |
+| MCP 工具代理（自动注册到 ToolRegistry） | ✅ |
+| Memory 系统（4 类型 + 提取 + Dream + Agent Memory） | ✅ |
 | 单元测试 | ✅ |
 
 ## 贡献
