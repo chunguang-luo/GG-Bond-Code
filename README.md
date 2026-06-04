@@ -211,35 +211,41 @@ paths: ["frontend/**/*", "src/**/*.tsx", "src/**/*.jsx"]
 
 NextCode 支持 [Model Context Protocol](https://modelcontextprotocol.io/)，可连接外部工具和数据服务器扩展能力。
 
+### 快速添加
+
+在项目根目录创建 `.mcp.json`，重启 NextCode 即可生效：
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"]
+    }
+  }
+}
+```
+
+工具以 `mcp__<server>__<tool>` 命名注册（如 `mcp__playwright__browser_navigate`），需用户确认后执行。
+
 ### 传输类型
 
 | 类型 | 说明 | 适用场景 |
 |------|------|---------|
-| `stdio` | 本地子进程通信 | 本地工具服务器（如 filesystem、git） |
-| `sse` | Server-Sent Events | 远程 HTTP 服务器 |
+| `stdio`（默认） | 本地子进程通信 | 本地工具服务器（如 filesystem、git） |
 | `http` | Streamable HTTP | 远程 HTTP 服务器（推荐） |
+| `sse` | Server-Sent Events | 远程 HTTP 服务器（旧版） |
 | `ws` | WebSocket | 双向实时通信 |
 | `sdk` | 进程内 SDK | 内嵌式集成 |
 
-### 配置方式
+### 配置示例
 
-MCP 服务器配置支持 5 个来源，优先级从低到高：
-
-| 来源 | 配置文件 | 优先级 |
-|------|---------|--------|
-| 项目级 | `.mcp.json` | 低 |
-| 用户级 | `~/.nextcode/.settings.json` | 中 |
-| 本地 | `.nextcode/.settings.local.json` | 中高 |
-| 动态 | `--mcp-config` CLI 参数 | 高 |
-| 企业 | `managed-mcp.json`（独占模式） | 最高 |
-
-**stdio 示例**（`.mcp.json`）：
+**本地工具（stdio）**：
 
 ```json
 {
   "mcpServers": {
     "filesystem": {
-      "type": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
     }
@@ -247,7 +253,7 @@ MCP 服务器配置支持 5 个来源，优先级从低到高：
 }
 ```
 
-**HTTP 示例**：
+**远程服务（HTTP）**：
 
 ```json
 {
@@ -261,44 +267,61 @@ MCP 服务器配置支持 5 个来源，优先级从低到高：
 }
 ```
 
-### OAuth 2.0 认证
-
-远程 MCP 服务器支持 OAuth 2.0 + PKCE 认证流程：
-
-1. 自动发现 OAuth 端点（RFC 8414 / RFC 9728）
-2. 动态客户端注册（RFC 7591，无 client_id 时）
-3. PKCE 授权码流程（S256 code_challenge）
-4. 浏览器授权 → 回调获取 token
-5. Token 自动刷新，安全存储（`~/.nextcode/mcp-tokens/`）
+**带 OAuth 认证**：
 
 ```json
 {
-  "type": "http",
-  "url": "https://api.example.com/mcp",
-  "oauth": {
-    "resource_url_url": "https://api.example.com/.well-known/oauth-protected-resource"
+  "mcpServers": {
+    "oauth-service": {
+      "type": "http",
+      "url": "https://api.example.com/mcp",
+      "oauth": {
+        "resource_url_url": "https://api.example.com/.well-known/oauth-protected-resource"
+      }
+    }
   }
 }
 ```
 
-### headersHelper 动态鉴权
-
-对于需要动态 token 的服务（如云厂商临时凭证），可指定脚本路径自动获取鉴权头：
+**动态鉴权（headersHelper）**：
 
 ```json
 {
-  "type": "http",
-  "url": "https://api.example.com/mcp",
-  "headersHelper": "./scripts/get-auth-headers.sh"
+  "mcpServers": {
+    "cloud-api": {
+      "type": "http",
+      "url": "https://api.example.com/mcp",
+      "headersHelper": "./scripts/get-auth-headers.sh"
+    }
+  }
 }
 ```
 
-脚本输出格式：每行 `Header-Name: value`，每次连接前自动执行。
+### 配置来源与优先级
 
-### 自动重连
+| 来源 | 配置文件 | 优先级 |
+|------|---------|--------|
+| 项目级 | `.mcp.json` | 低 |
+| 用户级 | `~/.nextcode/.settings.json` | 中 |
+| 本地 | `.nextcode/.settings.local.json` | 中高 |
+| 动态 | `--mcp-config` CLI 参数 | 高 |
+| 企业 | `managed-mcp.json`（独占模式） | 最高 |
 
-连接断开时自动重连，指数退避：1s → 2s → 4s → 8s → 16s（最大 30s），最多 5 次尝试。
-会话过期（404 + -32001）立即重连，不计入退避计数。
+### 常见 MCP 服务器
+
+| 服务器 | 安装命令 | 用途 |
+|--------|---------|------|
+| Playwright | `npx @playwright/mcp@latest` | 浏览器自动化 |
+| Filesystem | `npx @modelcontextprotocol/server-filesystem` | 文件系统访问 |
+| GitHub | `npx @modelcontextprotocol/server-github` | GitHub API |
+| PostgreSQL | `npx @modelcontextprotocol/server-postgres` | 数据库查询 |
+
+### 连接与重连
+
+- 启动时自动连接，日志输出状态：`MCP: <name> — connected/failed/needs-auth`
+- 断开时自动重连，指数退避：1s → 2s → 4s → 8s → 16s（最大 30s），最多 5 次
+- 会话过期（404 + -32001）立即重连，不计入退避计数
+- OAuth Token 自动刷新，安全存储在 `~/.nextcode/mcp-tokens/`
 
 ### 企业策略
 
