@@ -51,6 +51,7 @@ class CommandContext:
     loop_state: Any
     clear_system_context_cache: Callable[[], None]
     registry: Any  # CommandRegistry — use Any to avoid circular import
+    tool_registry: Any = None  # ToolRegistry — for listing MCP tools in /help
 
 
 # Type alias for command handler functions

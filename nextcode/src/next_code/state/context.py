@@ -109,7 +109,22 @@ def create_store_context(
         set_state_for_tasks=store.set,
         permissions=pm,
         registry=registry,
+        command_registry=_create_command_registry(),
     )
+
+
+def _create_command_registry() -> Any:
+    """Lazily create the built-in command registry.
+
+    Deferred import to avoid circular dependency between context.py and
+    commands/. Returns None if creation fails (non-fatal — SkillTool
+    will report the error at call time).
+    """
+    try:
+        from ..commands import create_builtin_registry
+        return create_builtin_registry()
+    except Exception:
+        return None
 
 
 def create_subagent_context(
@@ -171,6 +186,7 @@ def create_subagent_context(
         registry=parent.registry,
         abort=abort,
         file_cache=parent.file_cache.clone(),
+        command_registry=parent.command_registry,
         agent_id=agent_id,
         agent_type=agent_type,
         emit_ipc=parent.emit_ipc,  # 继承父级的 IPC 直通，支持嵌套实时输出

@@ -1,5 +1,4 @@
-"""FileReadTool — read file contents."""
-
+"""FileReadTool — read file contents with cache support."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -55,7 +54,27 @@ class FileReadTool(Tool):
             return ToolResult(output=f"Not a file: {file_path}", error=True)
 
         try:
-            full_text = file_path.read_text(errors="replace")
+            # Get file mtime for cache validation
+            try:
+                stat_result = file_path.stat()
+                mtime = stat_result.st_mtime
+            except OSError:
+                mtime = 0.0
+
+            # Check cache first — skip disk I/O if file unchanged
+            full_text = None
+            if self._context is not None:
+                try:
+                    full_text = self._context.file_cache.get_cached_content(
+                        str(file_path), mtime
+                    )
+                except Exception:
+                    pass  # Cache lookup is best-effort
+
+            # Cache miss — read from disk
+            if full_text is None:
+                full_text = file_path.read_text(errors="replace")
+
             lines = full_text.splitlines(keepends=True)
             start = (offset or 1) - 1  # 1-indexed to 0-indexed
             end = start + limit if limit else len(lines)
@@ -75,6 +94,7 @@ class FileReadTool(Tool):
                         content=full_text,
                         offset=offset,
                         limit=limit,
+                        mtime=mtime,
                     )
                 except Exception:
                     pass  # Cache recording is best-effort

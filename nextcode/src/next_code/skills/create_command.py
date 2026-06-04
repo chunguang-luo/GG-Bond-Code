@@ -72,9 +72,21 @@ def create_skill_command(
         # 1. Argument substitution: ${ARG_NAME} → user-supplied value
         if args and _arg_names:
             parts = args.split(maxsplit=len(_arg_names) - 1) if len(_arg_names) > 1 else [args]
+            substituted = False
             for i, arg_name in enumerate(_arg_names):
                 if i < len(parts):
-                    content = content.replace(f"${{{arg_name}}}", parts[i])
+                    placeholder = f"${{{arg_name}}}"
+                    if placeholder in content:
+                        content = content.replace(placeholder, parts[i])
+                        substituted = True
+            # If no ${VAR} placeholders matched, append user input as instructions
+            # so it's not silently discarded
+            if not substituted:
+                content = content.rstrip() + "\n\n---\nUser instruction: " + args
+        elif args:
+            # No formal argument names defined — append user input as instructions
+            # so it's not silently discarded
+            content = content.rstrip() + "\n\n---\nUser instruction: " + args
 
         # 2. Directory variable substitution: ${NEXTCODE_SKILL_DIR} → skill directory path
         if _base_dir:

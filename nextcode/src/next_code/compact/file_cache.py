@@ -3,16 +3,21 @@
 Core semantics:
 - is_partial_view: files read with offset/limit are flagged as partial;
   editing a partially-viewed file is blocked because unseen content may be damaged.
+  However, if the file was previously fully read and hasn't changed on disk (mtime
+  unchanged), a subsequent offset/limit read does NOT downgrade to partial — we
+  already have the full content cached.
+- get_cached_content: returns cached content when the file hasn't changed on disk
+  (mtime match), avoiding redundant disk I/O.
 - get_recent(): returns most recently accessed files, used to re-inject
   file contents after Full Compact so the model doesn't "lose memory".
 - LRU eviction with dual limits (max entries + max size).
 """
-
 from __future__ import annotations
 
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 # Skip caching files larger than this to avoid excessive memory use
@@ -26,6 +31,7 @@ class FileStateEntry:
     path: str
     content: str  # Full file content at read/edit time (for diff and rebuild)
     timestamp: float  # time.monotonic()
+    mtime: float = 0.0  # st_mtime from disk — used to detect file changes
     offset: int | None = None  # Read offset parameter
     limit: int | None = None  # Read limit parameter
     is_partial_view: bool = False  # True if only part of the file was read
@@ -35,9 +41,10 @@ class FileStateEntry:
 class FileStateCache:
     """LRU cache tracking file read/edit state.
 
-    Two roles:
-    1. Safety guard: block edits to partially-viewed files (can_edit).
-    2. Rebuild index: provide recently-accessed files for post-compact
+    Three roles:
+    1. Content cache: avoid re-reading unchanged files from disk (get_cached_content).
+    2. Safety guard: block edits to partially-viewed files (can_edit).
+    3. Rebuild index: provide recently-accessed files for post-compact
        re-injection (get_recent).
     """
 
@@ -51,6 +58,27 @@ class FileStateCache:
         self._max_size_bytes = max_size_bytes
         self._current_size_bytes: int = 0
 
+    # ── Content Cache ──────────────────────────────────────────────────
+
+    def get_cached_content(self, path: str, mtime: float) -> str | None:
+        """Return cached content if the file hasn't changed on disk.
+
+        Conditions for a cache hit:
+        - File is in the cache
+        - Cached entry is NOT a partial view (we have the full content)
+        - File mtime matches (file hasn't been modified externally)
+
+        Returns None on cache miss (caller should read from disk).
+        """
+        entry = self._entries.get(path)
+        if entry is None:
+            return None
+        if entry.is_partial_view:
+            return None
+        if mtime != entry.mtime:
+            return None
+        return entry.content
+
     # ── Recording ──────────────────────────────────────────────────────
 
     def record_read(
@@ -59,6 +87,7 @@ class FileStateCache:
         content: str,
         offset: int | None = None,
         limit: int | None = None,
+        mtime: float = 0.0,
     ) -> None:
         """Record that a file was read.
 
@@ -67,6 +96,7 @@ class FileStateCache:
             content: Full file content (even if offset/limit was used for display).
             offset: Read offset parameter (None = from start).
             limit: Read limit parameter (None = to end).
+            mtime: File's st_mtime at read time — used for change detection.
         """
         # Skip very large files
         if len(content.encode("utf-8", errors="replace")) > _MAX_CACHEABLE_FILE_SIZE:
@@ -74,15 +104,21 @@ class FileStateCache:
 
         is_partial = self._is_actually_partial(content, offset, limit)
 
-        # If the file was already fully read and content hasn't changed,
-        # don't downgrade to partial view — just refresh the timestamp
+        # If the file was already fully read and hasn't changed on disk,
+        # don't downgrade to partial view — just refresh the timestamp.
+        # This fixes the "File was only partially viewed" false positive
+        # when re-reading a previously-fully-read file with offset/limit.
         if path in self._entries:
             old = self._entries[path]
-            if not old.is_partial_view and old.content == content:
+            if not old.is_partial_view and (old.content == content or old.mtime == mtime):
+                # Cache hit: content unchanged or mtime confirms no change.
+                # Don't downgrade a full read to partial.
                 self._entries.move_to_end(path)
                 old.timestamp = time.monotonic()
+                old.mtime = mtime
                 old.was_edited = False
                 return
+            # Content or mtime changed — replace the entry
             self._current_size_bytes -= len(old.content.encode("utf-8", errors="replace"))
             self._entries.pop(path)
 
@@ -90,6 +126,7 @@ class FileStateCache:
             path=path,
             content=content,
             timestamp=time.monotonic(),
+            mtime=mtime,
             offset=offset,
             limit=limit,
             is_partial_view=is_partial,
@@ -114,6 +151,12 @@ class FileStateCache:
                 self._current_size_bytes -= len(old.content.encode("utf-8", errors="replace"))
             return
 
+        # Get current mtime from disk (after the edit is written)
+        try:
+            mtime = Path(path).stat().st_mtime
+        except OSError:
+            mtime = 0.0
+
         if path in self._entries:
             old = self._entries.pop(path)
             self._current_size_bytes -= len(old.content.encode("utf-8", errors="replace"))
@@ -122,6 +165,7 @@ class FileStateCache:
             path=path,
             content=new_content,
             timestamp=time.monotonic(),
+            mtime=mtime,
             is_partial_view=False,  # After edit, we know the full content
             was_edited=True,
         )
@@ -188,6 +232,7 @@ class FileStateCache:
                 path=entry.path,
                 content=entry.content,
                 timestamp=entry.timestamp,
+                mtime=entry.mtime,
                 offset=entry.offset,
                 limit=entry.limit,
                 is_partial_view=entry.is_partial_view,

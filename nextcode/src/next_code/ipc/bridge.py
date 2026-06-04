@@ -227,6 +227,7 @@ class IPCBridge:
             loop_state=self._runner.loop_state,
             clear_system_context_cache=clear_system_context_cache,
             registry=self._command_registry,
+            tool_registry=self._context.registry,
         )
 
         # For /compact, send compact.started before dispatch
@@ -255,7 +256,9 @@ class IPCBridge:
             await self.transport.send_event("query.info", {"message": message})
         elif result.type == ResultType.CLEAR:
             self._runner._injected_messages.clear()
-            self._context = create_store_context()
+            self._context = create_store_context(registry=self._context.registry)
+            # Preserve command registry (with loaded skills) and tool_registry
+            self._context.command_registry = self._command_registry
             self._runner = QueryRunner(
                 model=self.model,
                 permission_callback=self._ask_permission,
@@ -567,6 +570,7 @@ class IPCBridge:
 
         from ..commands.cache import clear_command_caches
         clear_command_caches()
+        self._context.registry.invalidate_schema_cache("Skill")
 
     # ── Permission flow ────────────────────────────────────────────────────
 
@@ -661,12 +665,13 @@ class IPCBridge:
         # Load skills after session is ready (non-blocking)
         if not self._skills_loaded:
             self._skills_loaded = True
-            asyncio.create_task(self._load_skills(cwd))
+            project_root = store.get("project_root")
+            asyncio.create_task(self._load_skills(cwd, project_root))
 
-    async def _load_skills(self, cwd: str) -> None:
+    async def _load_skills(self, cwd: str, project_root: str | None = None) -> None:
         """Load skills from user and project directories."""
         try:
-            await self._command_registry.load_skills(cwd)
+            await self._command_registry.load_skills(cwd, project_root)
             # Register conditional skills (those with paths) in the manager
             from ..commands.types import PromptCommand
             for cmd in self._command_registry.all_commands():
@@ -675,6 +680,9 @@ class IPCBridge:
             # Clear command caches after skill set changes
             from ..commands.cache import clear_command_caches
             clear_command_caches()
+            # Invalidate SkillTool's schema cache so its dynamic description
+            # (which includes available skill names) gets regenerated
+            self._context.registry.invalidate_schema_cache("Skill")
             # Send updated command list to frontend (includes skills now)
             await self._send_commands_update()
             logger.info("Skills loaded for cwd=%s", cwd)

@@ -79,25 +79,44 @@ class CommandRegistry:
         """Return primary command names only, sorted."""
         return sorted(self._primary_names)
 
-    async def load_skills(self, cwd: str) -> None:
+    async def load_skills(
+        self, cwd: str, project_root: str | None = None
+    ) -> None:
         """Load skills from user and project skill directories.
 
         Skills override builtins of the same name (user/project take priority).
 
         Args:
             cwd: Current working directory — used to locate project-level skills.
+            project_root: Project root directory — also searched for skills.
+                If None, only cwd is used. This covers the case where the user
+                launches from a subdirectory but skills live at the project root.
         """
         from ..skills.loader import load_skills_from_dir
 
-        # Parallel load from both sources
-        project_dir = Path(cwd) / ".nextcode" / "skills"
-        user_dir = Path.home() / ".nextcode" / "skills"
+        dirs: list[tuple[Path, str, str]] = [
+            (Path.home() / ".nextcode" / "skills", "user", "skills"),
+        ]
 
-        project_skills, user_skills = await asyncio.gather(
-            load_skills_from_dir(project_dir, source="project", loaded_from="skills"),
-            load_skills_from_dir(user_dir, source="user", loaded_from="skills"),
+        # Search cwd
+        dirs.append(
+            (Path(cwd) / ".nextcode" / "skills", "project", "skills")
+        )
+
+        # Also search project_root if distinct from cwd
+        if project_root and project_root != cwd:
+            dirs.append(
+                (Path(project_root) / ".nextcode" / "skills", "project", "skills")
+            )
+
+        results = await asyncio.gather(
+            *(
+                load_skills_from_dir(d, source=src, loaded_from=lf)
+                for d, src, lf in dirs
+            )
         )
 
         # Register with override: project skills > user skills > builtins
-        for cmd in user_skills + project_skills:
-            self.register_override(cmd)
+        for skills in results:
+            for cmd in skills:
+                self.register_override(cmd)
