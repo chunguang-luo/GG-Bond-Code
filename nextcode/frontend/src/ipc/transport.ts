@@ -1,23 +1,23 @@
 /**
- * IPC Transport — Unix domain socket client for Ink ↔ Python communication.
+ * IPC Transport — stdio pipe client for Ink ↔ Python communication.
  *
- * Connects to the Python Core's socket server and provides:
- * - JSON-line message framing (encode/decode)
- * - Bidirectional async send/receive
- * - Reconnection support (future)
+ * Reads JSON-RPC notifications from fd 3 (inherited pipe from Python),
+ * writes JSON-RPC notifications to fd 4 (inherited pipe to Python).
+ *
+ * Stdin is reserved for Ink keyboard input; stdout for Ink rendering.
  */
 
-import * as net from "net";
+import * as fs from "fs";
+import * as readline from "readline";
 import { Message } from "./protocol";
 
 export class IPCTransport {
-  private socket: net.Socket | null = null;
-  private buffer = "";
+  private rxStream: fs.ReadStream | null = null;
+  private rl: readline.Interface | null = null;
+  private txStream: fs.WriteStream | null = null;
   private messageHandler: ((msg: Message) => void) | null = null;
   private _disconnectHandler: (() => void) | null = null;
   private _connected = false;
-
-  constructor(private socketPath: string) {}
 
   get connected(): boolean {
     return this._connected;
@@ -31,57 +31,68 @@ export class IPCTransport {
     this._disconnectHandler = handler;
   }
 
-  connect(timeout = 10000): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const socket = new net.Socket();
+  connect(): void {
+    const rxFd = parseInt(process.env.NEXTCODE_IPC_RX_FD || "3", 10);
+    const txFd = parseInt(process.env.NEXTCODE_IPC_TX_FD || "4", 10);
 
-      const timer = setTimeout(() => {
-        socket.destroy();
-        reject(new Error(`Connection timeout after ${timeout}ms`));
-      }, timeout);
+    // Write stream for sending IPC messages to Python (fd = pipe write end)
+    this.txStream = fs.createWriteStream("", { fd: txFd, autoClose: false });
 
-      socket.connect(this.socketPath, () => {
-        clearTimeout(timer);
-        this.socket = socket;
-        this._connected = true;
-        resolve();
-      });
+    // Read stream for receiving IPC messages from Python (fd = pipe read end)
+    this.rxStream = fs.createReadStream("", { fd: rxFd, autoClose: false });
 
-      socket.on("data", (data: Buffer) => {
-        this.buffer += data.toString("utf-8");
-        this._processBuffer();
-      });
-
-      socket.on("close", () => {
-        this._connected = false;
-        if (this._disconnectHandler) {
-          this._disconnectHandler();
-        }
-      });
-
-      socket.on("error", (err) => {
-        clearTimeout(timer);
-        const wasConnected = this._connected;
-        this._connected = false;
-        reject(err);
-        if (wasConnected && this._disconnectHandler) {
-          this._disconnectHandler();
-        }
-      });
+    this.rl = readline.createInterface({
+      input: this.rxStream,
+      crlfDelay: Infinity,
     });
+
+    this.rl.on("line", (line: string) => {
+      if (!line.trim()) return;
+      try {
+        const raw = JSON.parse(line);
+        const msg: Message = {
+          type: raw.method || raw.type || "",
+          payload: raw.params || raw.payload || {},
+          id: raw.id !== undefined ? String(raw.id) : "",
+        };
+        if (this.messageHandler) {
+          this.messageHandler(msg);
+        }
+      } catch {
+        process.stderr.write(`[IPC] Invalid message: ${line.slice(0, 120)}\n`);
+      }
+    });
+
+    this.rxStream.on("close", () => {
+      this._connected = false;
+      if (this._disconnectHandler) {
+        this._disconnectHandler();
+      }
+    });
+
+    this.rxStream.on("error", () => {
+      this._connected = false;
+      if (this._disconnectHandler) {
+        this._disconnectHandler();
+      }
+    });
+
+    this._connected = true;
   }
 
   send(msg: Message): void {
-    if (!this.socket || !this._connected) {
-      return; // Silently ignore when disconnected — prevents uncaught exceptions
+    if (!this.txStream || !this._connected) {
+      return;
     }
-    const data: Record<string, unknown> = { type: msg.type, payload: msg.payload };
-    if (msg.id) data.id = msg.id;
-    const line = JSON.stringify(data) + "\n";
+    const line =
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: msg.type,
+        params: msg.payload,
+      }) + "\n";
     try {
-      this.socket.write(line, "utf-8");
+      this.txStream.write(line, "utf-8");
     } catch {
-      // Socket write can fail if connection dropped between check and write
       this._connected = false;
     }
   }
@@ -90,38 +101,27 @@ export class IPCTransport {
     this.send({ type, payload, id });
   }
 
+  sendNotification(method: string, params: Record<string, unknown> = {}): void {
+    this.send({ type: method, payload: params });
+  }
+
   close(): void {
-    if (this.socket) {
-      this.socket.destroy();
-      this.socket = null;
-      this._connected = false;
+    if (this.rl) {
+      this.rl.close();
+      this.rl = null;
     }
-  }
-
-  private _processBuffer(): void {
-    let idx: number;
-    while ((idx = this.buffer.indexOf("\n")) !== -1) {
-      const line = this.buffer.slice(0, idx).trim();
-      this.buffer = this.buffer.slice(idx + 1);
-      if (!line) continue;
-
+    if (this.rxStream) {
+      this.rxStream.destroy();
+      this.rxStream = null;
+    }
+    if (this.txStream) {
       try {
-        const msg = this._decode(line);
-        if (this.messageHandler) {
-          this.messageHandler(msg);
-        }
-      } catch (e) {
-        process.stderr.write(`[IPC] Invalid message: ${e}\n`);
+        this.txStream.end();
+      } catch {
+        // Ignore close errors
       }
+      this.txStream = null;
     }
-  }
-
-  private _decode(line: string): Message {
-    const data = JSON.parse(line);
-    return {
-      type: data.type,
-      payload: data.payload || {},
-      id: data.id || "",
-    };
+    this._connected = false;
   }
 }

@@ -1,13 +1,13 @@
-"""IPC transport — Unix domain socket server for Python ↔ Ink communication.
+"""IPC transport — pipe-based IPC for Python ↔ Ink communication.
 
-Provides bidirectional JSON-line messaging over a Unix domain socket.
-Python creates the socket server, Ink connects as a client.
+Provides bidirectional JSON-RPC 2.0 messaging over OS pipes.
+Python creates two pipes, passes read ends to the Node.js child,
+and communicates via the parent-side pipe ends.
 
 Lifecycle:
-    1. start() — create + bind + listen on socket
-    2. wait_for_connection() — accept a single client
-    3. send() / receive() — bidirectional message passing
-    4. close() — clean shutdown, remove socket file
+    1. start(process, tx_fd, rx_fd) — begin I/O on the pipes
+    2. send() / send_event() — write JSON-RPC notifications to tx pipe
+    3. close() — clean shutdown, terminate child process
 """
 
 from __future__ import annotations
@@ -16,159 +16,163 @@ import asyncio
 import json
 import logging
 import os
-import sys
-from pathlib import Path
+import subprocess
 from typing import Any, Callable, Awaitable
 
-from .protocol import Message
+from .protocol import Message, decode_message
 
 logger = logging.getLogger(__name__)
 
 
 class IPCTransport:
-    """Async Unix domain socket transport for IPC messages."""
+    """Async pipe-based transport for IPC."""
 
-    def __init__(self, socket_path: str | None = None) -> None:
-        if socket_path is None:
-            socket_path = f"/tmp/nextcode-ipc-{os.getpid()}.sock"
-        self.socket_path = socket_path
-        self._server: asyncio.Server | None = None
-        self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
-        self._connected = asyncio.Event()
+    def __init__(self) -> None:
+        self._popen: subprocess.Popen | None = None
+        self._tx_writer: asyncio.StreamWriter | None = None  # Python → Node.js
+        self._rx_reader: asyncio.StreamReader | None = None  # Node.js → Python
+        self._rx_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
         self._closed = False
+        self._connected = asyncio.Event()
         self._message_handler: Callable[[Message], Awaitable[None]] | None = None
-        self._receive_task: asyncio.Task | None = None
+
+    @property
+    def socket_path(self) -> str:
+        return ""  # No socket path in pipe mode
 
     @property
     def is_connected(self) -> bool:
         return self._connected.is_set() and not self._closed
 
     def on_message(self, handler: Callable[[Message], Awaitable[None]]) -> None:
-        """Register an async message handler for incoming Ink messages."""
         self._message_handler = handler
 
-    async def start(self) -> None:
-        """Create and start the Unix socket server."""
-        # Remove stale socket file
-        if os.path.exists(self.socket_path):
-            os.unlink(self.socket_path)
+    async def start(
+        self,
+        process: subprocess.Popen,
+        tx_fd: int,
+        rx_fd: int,
+    ) -> None:
+        """Start transport using an already-running subprocess and pipe fds."""
+        self._popen = process
+        loop = asyncio.get_running_loop()
 
-        self._server = await asyncio.start_unix_server(
-            self._handle_connection,
-            path=self.socket_path,
+        # Set up StreamWriter for the tx pipe (Python → Node.js)
+        tx_file = os.fdopen(tx_fd, "wb", buffering=0)
+        tx_transport, tx_protocol = await loop.connect_write_pipe(
+            lambda: asyncio.streams.FlowControlMixin(loop=loop),
+            tx_file,
         )
-        logger.info("IPC server listening on %s", self.socket_path)
+        self._tx_writer = asyncio.StreamWriter(
+            tx_transport, tx_protocol, None, loop=loop,
+        )
+
+        # Set up StreamReader for the rx pipe (Node.js → Python)
+        rx_file = os.fdopen(rx_fd, "rb", buffering=0)
+        self._rx_reader = asyncio.StreamReader(loop=loop)
+        rx_protocol = asyncio.StreamReaderProtocol(self._rx_reader, loop=loop)
+        await loop.connect_read_pipe(lambda: rx_protocol, rx_file)
+
+        # Drain Node.js stderr in background
+        if process.stderr is not None:
+            self._stderr_task = asyncio.create_task(self._drain_stderr())
+
+        self._connected.set()
+        self._rx_task = asyncio.create_task(self._receive_loop())
+
+        logger.info("IPC transport started (tx_fd=%d, rx_fd=%d)", tx_fd, rx_fd)
 
     async def wait_for_connection(self, timeout: float = 10.0) -> bool:
-        """Wait for the Ink process to connect.
-
-        Returns True if connected within timeout, False otherwise.
-        """
-        try:
-            await asyncio.wait_for(self._connected.wait(), timeout=timeout)
-            return True
-        except asyncio.TimeoutError:
-            logger.warning("IPC: no connection within %.1fs", timeout)
-            return False
+        return True  # Always already connected after start()
 
     async def send(self, msg: Message) -> None:
-        """Send a message to the connected Ink process."""
-        if self._writer is None or self._closed:
-            logger.warning("IPC: cannot send, not connected")
+        """Send a message to the Ink process."""
+        if self._tx_writer is None or self._closed:
             return
 
         try:
             data = msg.encode()
-            self._writer.write(data)
-            await self._writer.drain()
+            self._tx_writer.write(data)
+            await self._tx_writer.drain()
         except (ConnectionResetError, BrokenPipeError, OSError) as e:
             logger.warning("IPC: send failed: %s", e)
             self._connected.clear()
 
-    async def send_event(self, msg_type: str, payload: dict[str, Any] | None = None, msg_id: str = "") -> None:
-        """Convenience: send a message by type and payload."""
+    async def send_event(
+        self, msg_type: str, payload: dict[str, Any] | None = None, msg_id: str = "",
+    ) -> None:
         await self.send(Message(type=msg_type, payload=payload or {}, id=msg_id))
 
     async def close(self) -> None:
-        """Shut down the transport cleanly."""
+        """Shut down transport and terminate child process."""
         self._closed = True
         self._connected.clear()
 
-        # Cancel receive task
-        if self._receive_task is not None and not self._receive_task.done():
-            self._receive_task.cancel()
-            try:
-                await self._receive_task
-            except asyncio.CancelledError:
-                pass
+        # Cancel I/O tasks
+        for task in (self._rx_task, self._stderr_task):
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
-        # Close writer
-        if self._writer is not None:
+        # Close tx writer
+        if self._tx_writer is not None:
             try:
-                self._writer.close()
-                await self._writer.wait_closed()
+                self._tx_writer.close()
+                await self._tx_writer.wait_closed()
             except OSError:
                 pass
-            self._writer = None
-            self._reader = None
+            except AttributeError:
+                pass
+            self._tx_writer = None
+            self._rx_reader = None
 
-        # Close server
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
-
-        # Remove socket file
-        if os.path.exists(self.socket_path):
+        # Terminate child process
+        if self._popen is not None and self._popen.poll() is None:
             try:
-                os.unlink(self.socket_path)
-            except OSError:
+                self._popen.terminate()
+                try:
+                    await asyncio.wait_for(
+                        asyncio.get_running_loop().run_in_executor(None, self._popen.wait),
+                        timeout=2.0,
+                    )
+                except asyncio.TimeoutError:
+                    self._popen.kill()
+            except ProcessLookupError:
                 pass
 
         logger.info("IPC transport closed")
 
     # ── Internal ──────────────────────────────────────────────────────────
 
-    async def _handle_connection(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-    ) -> None:
-        """Handle a new connection from the Ink process."""
-        if self._writer is not None:
-            logger.warning("IPC: rejecting extra connection")
-            writer.close()
-            return
-
-        self._reader = reader
-        self._writer = writer
-        self._connected.set()
-        logger.info("IPC: Ink process connected")
-
-        # Start receiving messages
-        self._receive_task = asyncio.create_task(self._receive_loop())
-
     async def _receive_loop(self) -> None:
-        """Read and dispatch incoming messages."""
-        assert self._reader is not None
+        """Read and dispatch incoming messages from the rx pipe."""
+        assert self._rx_reader is not None
 
         try:
             while not self._closed:
-                line = await self._reader.readline()
+                line = await self._rx_reader.readline()
                 if not line:
-                    # Connection closed by Ink
-                    logger.info("IPC: connection closed by Ink")
+                    logger.info("IPC: Node.js rx pipe closed")
                     self._connected.clear()
                     break
 
                 try:
-                    msg = Message.decode(line.strip())
+                    data = decode_message(line.strip())
                 except (json.JSONDecodeError, KeyError) as e:
                     logger.warning("IPC: invalid message: %s", e)
                     continue
 
-                # Dispatch to handler
+                # Convert JSON-RPC to legacy Message for bridge compatibility
+                msg = Message(
+                    type=data.get("method", data.get("type", "")),
+                    payload=data.get("params", data.get("payload", {})),
+                    id=str(data.get("id", "")),
+                )
+
                 if self._message_handler is not None:
                     try:
                         await self._message_handler(msg)
@@ -176,9 +180,28 @@ class IPCTransport:
                         logger.exception("IPC: message handler error")
         except asyncio.CancelledError:
             pass
-        except ConnectionResetError:
-            logger.info("IPC: connection reset by Ink")
+        except OSError:
+            logger.info("IPC: receive pipe closed")
             self._connected.clear()
         except Exception:
             logger.exception("IPC: receive loop error")
             self._connected.clear()
+
+    async def _drain_stderr(self) -> None:
+        """Read Node.js stderr lines from Popen to prevent pipe blocking."""
+        if self._popen is None or self._popen.stderr is None:
+            return
+        stderr = self._popen.stderr  # synchronous BufferedReader
+        loop = asyncio.get_running_loop()
+        try:
+            while not self._closed:
+                line = await loop.run_in_executor(None, stderr.readline)
+                if not line:
+                    break
+                msg = line.strip()
+                if msg:
+                    logger.debug("Ink stderr: %s", msg)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass

@@ -1,10 +1,11 @@
 /**
- * IPC Protocol — shared message type definitions.
+ * IPC Protocol — JSON-RPC 2.0 over pipe fd.
  *
- * Wire format: JSON lines terminated by \n over Unix domain socket.
- *     {"type": "event_name", "id": "correlation-id?", "payload": {...}}\n
+ * Wire format: one JSON-RPC 2.0 message per line (notification or request).
+ *     → Notification: {"jsonrpc":"2.0","method":"event.name","params":{...}}\n
+ *     → Request:      {"jsonrpc":"2.0","id":1,"method":"event.name","params":{...}}\n
  *
- * This file mirrors the Python-side protocol.py 1:1.
+ * Mirrors the Python-side protocol.py 1:1.
  */
 
 // ── Python → Ink (Core → UI) ─────────────────────────────────────────────────
@@ -53,20 +54,19 @@ export const CoreToInk = {
   AGENT_START: "agent.start",
   AGENT_RESULT: "agent.result",
 
-  // Agent real-time streaming — sub-agent events with "agent." prefix
-  // so the frontend renders them distinctly from parent conversation
+  // Agent real-time streaming
   AGENT_TEXT_DELTA: "agent.text_delta",
   AGENT_TOOL_USE: "agent.tool_use",
   AGENT_TOOL_RESULT: "agent.tool_result",
   AGENT_PROGRESS: "agent.progress",
 
-  // Task events — background task lifecycle
+  // Task events
   TASK_STARTED: "task.started",
   TASK_COMPLETED: "task.completed",
   TASK_FAILED: "task.failed",
   TASK_COUNT: "task.count",
-  TASK_OUTPUT: "task.output",  // Real-time output streaming for running tasks
-  TASK_STALLED: "task.stalled",  // Task may be waiting for interactive input
+  TASK_OUTPUT: "task.output",
+  TASK_STALLED: "task.stalled",
 
   // Heartbeat
   PING: "ping",
@@ -88,14 +88,35 @@ export const InkToCore = {
   UI_RESIZE: "ui.resize",
   THEME_CHANGE: "theme.change",
   SHUTDOWN_ACK: "shutdown.ack",
-  // Task control — frontend tells backend to manage background tasks
-  TASK_STOP: "task.stop",    // Stop a running task
-  TASK_RETAIN: "task.retain", // Mark a task to stay visible
+  TASK_STOP: "task.stop",
+  TASK_RETAIN: "task.retain",
 } as const;
 
 export type InkToCoreType = (typeof InkToCore)[keyof typeof InkToCore];
 
-// ── Message ────────────────────────────────────────────────────────────────────
+// ── JSON-RPC 2.0 Message ────────────────────────────────────────────────────
+
+export interface JsonRpcNotification {
+  jsonrpc: "2.0";
+  method: string;
+  params: Record<string, unknown>;
+}
+
+export interface JsonRpcRequest {
+  jsonrpc: "2.0";
+  id: number;
+  method: string;
+  params: Record<string, unknown>;
+}
+
+export interface JsonRpcResponse {
+  jsonrpc: "2.0";
+  id: number;
+  result?: Record<string, unknown>;
+  error?: { code: number; message: string; data?: unknown };
+}
+
+// ── Legacy Message (backward compat) ─────────────────────────────────────────
 
 export interface Message {
   type: string;
@@ -103,7 +124,7 @@ export interface Message {
   id?: string;
 }
 
-// ── Payload types ──────────────────────────────────────────────────────────────
+// ── Payload types ────────────────────────────────────────────────────────────
 
 export interface SessionReadyPayload {
   model: string;
@@ -188,7 +209,7 @@ export interface ReadyPayload {
   };
 }
 
-// ── Task payloads ──────────────────────────────────────────────────────────────
+// ── Task payloads ────────────────────────────────────────────────────────────
 
 export interface TaskCountPayload {
   bash: number;
@@ -221,7 +242,7 @@ export interface TaskStalledPayload {
   message: string;
 }
 
-// ── Permission decision ────────────────────────────────────────────────────────
+// ── Permission decision ──────────────────────────────────────────────────────
 
 export const PermissionDecisionValue = {
   ALLOW: "allow",

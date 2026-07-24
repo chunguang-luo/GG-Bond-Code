@@ -120,7 +120,7 @@ async def _run_interactive(ctx: click.Context) -> None:
         raise SystemExit(1)
 
     transport = IPCTransport()
-    launcher = InkLauncher(socket_path=transport.socket_path)
+    launcher = InkLauncher()
     bridge = IPCBridge(
         transport=transport,
         model=ctx.obj["model"],
@@ -131,24 +131,21 @@ async def _run_interactive(ctx: click.Context) -> None:
     )
 
     try:
-        # 1. Start IPC transport
-        await transport.start()
-
-        # 2. Launch Ink process (Ink inherits terminal stdin/stdout/stderr)
+        # 1. Launch Ink process (creates pipes, spawns node)
         success = await launcher.launch()
         if not success:
             click.echo("Error: Ink frontend failed to start.", err=True)
             raise SystemExit(1)
 
-        # 3. Wait for Ink to connect via IPC socket
-        connected = await transport.wait_for_connection(timeout=10.0)
-        if not connected:
-            logger.warning("Ink: no connection from frontend")
-            await launcher.shutdown()
-            click.echo("Error: Ink frontend did not connect.", err=True)
-            raise SystemExit(1)
+        # 2. Start IPC transport over the pipes
+        await transport.start(
+            process=launcher.process,
+            tx_fd=launcher.tx_fd,
+            rx_fd=launcher.rx_fd,
+        )
 
-        # 4. Send session ready + welcome
+        # 3. Wait briefly for Node.js to start up, then send session ready
+        await asyncio.sleep(0.2)
         await bridge.send_session_ready()
         await bridge.send_welcome()
 
