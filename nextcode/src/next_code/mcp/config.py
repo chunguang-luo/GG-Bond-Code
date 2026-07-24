@@ -1,7 +1,11 @@
 """MCP configuration loading — multi-source collection, validation, dedup, merge.
 
 Merge order (low to high priority):
-  project (.mcp.json) < user (~/.nextcode/.settings.json) < local < dynamic
+  project (.mcp.json) < project settings (.nextcode/.settings.json) < user < local < dynamic
+
+Project-level config sources per directory (first found wins for each server):
+  1. .nextcode/.settings.json  — mcpServers key (preferred, unified config)
+  2. .mcp.json                 — standalone MCP config (fallback)
 
 Enterprise exclusive mode: if managed-mcp.json exists, only enterprise servers
 are returned. All other config sources are skipped.
@@ -131,12 +135,16 @@ def _scope_priority(scope: ConfigScope) -> int:
     return priorities.get(scope, 0)
 
 
-# ── .mcp.json Loading (project-level upward traversal) ─────────
+# ── Project MCP Config Loading (upward traversal) ────────────────
 
 def load_project_mcp_configs(cwd: str) -> dict[str, ScopedMcpServerConfig]:
-    """Load .mcp.json files from CWD upward to root.
+    """Load MCP configs from CWD upward to root.
 
-    Closer to CWD = higher priority (later files override earlier ones).
+    Per directory, two sources are checked (first found wins per server):
+      1. .nextcode/.settings.json — mcpServers key (preferred)
+      2. .mcp.json               — standalone MCP config (fallback)
+
+    Closer to CWD = higher priority (later directories override earlier ones).
     """
     all_servers: dict[str, ScopedMcpServerConfig] = {}
     dirs: list[str] = []
@@ -148,12 +156,32 @@ def load_project_mcp_configs(cwd: str) -> dict[str, ScopedMcpServerConfig]:
 
     # Process from root toward CWD — closer to CWD overwrites
     for dir_path in reversed(dirs):
+        # 1. Preferred: .nextcode/.settings.json → mcpServers
+        settings_path = os.path.join(dir_path, ".nextcode", ".settings.json")
+        # 2. Fallback: .mcp.json
         mcp_json_path = os.path.join(dir_path, ".mcp.json")
+
+        # Load .nextcode/.settings.json mcpServers first (preferred)
+        if os.path.isfile(settings_path):
+            try:
+                data = json.loads(Path(settings_path).read_text())
+                servers = data.get("mcpServers", {})
+                for name, raw_config in servers.items():
+                    config = parse_server_config(name, raw_config)
+                    all_servers[name] = ScopedMcpServerConfig(
+                        config=config, scope=ConfigScope.PROJECT, name=name,
+                    )
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning("Failed to parse %s: %s", settings_path, e)
+
+        # Load .mcp.json as fallback (only for servers not already found)
         if os.path.isfile(mcp_json_path):
             try:
                 data = json.loads(Path(mcp_json_path).read_text())
                 servers = data.get("mcpServers", {})
                 for name, raw_config in servers.items():
+                    if name in all_servers:
+                        continue  # .settings.json takes priority
                     config = parse_server_config(name, raw_config)
                     all_servers[name] = ScopedMcpServerConfig(
                         config=config, scope=ConfigScope.PROJECT, name=name,

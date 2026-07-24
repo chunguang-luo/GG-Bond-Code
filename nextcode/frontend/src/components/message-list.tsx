@@ -352,7 +352,7 @@ interface AgentEntry {
 }
 
 /** Agent group — displays one or more sub-agents as a task list. */
-function AgentGroupItem({ msg }: { msg: DisplayMessage }) {
+function AgentGroupItem({ msg, columns }: { msg: DisplayMessage; columns: number }) {
   const meta = msg.metadata as {
     _startMs?: number;
     _title?: string;
@@ -391,24 +391,38 @@ function AgentGroupItem({ msg }: { msg: DisplayMessage }) {
         )}
       </Box>
       {/* Agent task list */}
-      {agents.map((agent, idx) => (
-        <Box key={agent.agent_id || idx} marginLeft={2}>
-          <Text dimColor>{"⎿ "}</Text>
-          <Text color={STATUS_COLORS[agent.status]}>{STATUS_ICONS[agent.status]} </Text>
-          <Text
-            dimColor={agent.status === "done"}
-            bold={agent.status === "running"}
-          >
-            {agent.description}
-          </Text>
-          {agent.is_background && agent.status === "running" && (
-            <Text dimColor color="gray"> (bg)</Text>
-          )}
-          {agent.status === "done" && agent.elapsed && (
-            <Text dimColor>{` (${agent.elapsed})`}</Text>
-          )}
-        </Box>
-      ))}
+      {agents.map((agent, idx) => {
+        // Calculate available width for description text
+        // Layout: outer marginLeft(2) + inner marginLeft(2) + "⎿ " + icon + " " + suffix
+        const prefixWidth = 4 + 2 + 2 + 2; // margins + "⎿ " + icon + space
+        const suffixWidth = (agent.is_background && agent.status === "running" ? 5 : 0)
+          + (agent.status === "done" && agent.elapsed ? agent.elapsed.length + 3 : 0)
+          + 1; // safety margin
+        const maxDescWidth = Math.max(10, columns - prefixWidth - suffixWidth);
+        const desc = agent.description;
+        const displayDesc = visualWidth(desc) > maxDescWidth
+          ? desc.slice(0, maxDescWidth - 3) + "..."
+          : desc;
+
+        return (
+          <Box key={agent.agent_id || idx} marginLeft={2}>
+            <Text dimColor>{"⎿ "}</Text>
+            <Text color={STATUS_COLORS[agent.status]}>{STATUS_ICONS[agent.status]} </Text>
+            <Text
+              dimColor={agent.status === "done"}
+              bold={agent.status === "running"}
+            >
+              {displayDesc}
+            </Text>
+            {agent.is_background && agent.status === "running" && (
+              <Text dimColor color="gray"> (bg)</Text>
+            )}
+            {agent.status === "done" && agent.elapsed && (
+              <Text dimColor>{` (${agent.elapsed})`}</Text>
+            )}
+          </Box>
+        );
+      })}
     </Box>
   );
 }
@@ -574,7 +588,7 @@ function MessageItem({ msg, columns }: { msg: DisplayMessage; columns: number })
     }
 
     case "agent_group": {
-      return <AgentGroupItem msg={msg} />;
+      return <AgentGroupItem msg={msg} columns={columns} />;
     }
 
     case "agent_result": {

@@ -181,6 +181,11 @@ class BashExecutor:
                     exit_code=-1,
                     semantic=semantic,
                 )
+            except asyncio.CancelledError:
+                # User interrupt (Esc) — kill the subprocess immediately
+                proc.kill()
+                await proc.wait()
+                raise  # Re-raise so the query task is properly cancelled
 
             stdout = stdout_bytes.decode(errors="replace")
             stderr = stderr_bytes.decode(errors="replace")

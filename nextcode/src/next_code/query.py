@@ -168,6 +168,7 @@ class QueryRunner:
 
     async def run(self, user_message: str) -> AsyncIterator[QueryEvent]:
         """Run a single user message through the conversation loop."""
+        logger.info(f"Query started with model={self.model}, max_turns={self.max_turns}")
         ctx = self._context
         self._loop_state.reset()
         self._loop_state.set_transition(TransitionReason.NEXT_TURN, detail="run started")

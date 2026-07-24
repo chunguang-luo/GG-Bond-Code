@@ -891,28 +891,18 @@ export function App({ transport }: AppProps) {
 
   // ── User Input ────────────────────────────────────────────────────────────
 
-  // Double-ESC interrupt: press Escape twice within 500ms to cancel the
-  // current query. Uses a ref to track the last ESC timestamp.
-  const lastEscRef = useRef(0);
-
+  // ESC interrupt: press Escape once to cancel the current query.
   useInput((input, key) => {
     if (key.escape && isQueryRunning) {
-      const now = Date.now();
-      if (now - lastEscRef.current < 500) {
-        // Double ESC — interrupt current query
-        lastEscRef.current = 0;
-        transport.sendEvent(InkToCore.USER_INTERRUPT, {});
-        setMessages((prev) => [
-          ...prev,
-          { id: nextId(), type: "info", content: "⏹ Interrupted" },
-        ]);
-        setIsQueryRunning(false);
-        setQueryStartMs(null);
-        pendingQuestionsRef.current = [];
-        setPendingQuestions([]);
-      } else {
-        lastEscRef.current = now;
-      }
+      transport.sendEvent(InkToCore.USER_INTERRUPT, {});
+      setMessages((prev) => [
+        ...prev,
+        { id: nextId(), type: "info", content: "⏹ Interrupted" },
+      ]);
+      setIsQueryRunning(false);
+      setQueryStartMs(null);
+      pendingQuestionsRef.current = [];
+      setPendingQuestions([]);
     }
   });
 
