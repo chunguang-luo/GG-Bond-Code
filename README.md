@@ -19,7 +19,7 @@ AI Agent代码助手，保留Agent核心架构设计机制。支持读取、编�
 
 ## 特性
 
-- **Ink 终端 UI** — React + Ink 前端，双进程 IPC 架构，Python 后端 + Node.js 前端，Unix Domain Socket 双向 JSON-Line 通信
+- **Ink 终端 UI** — React + Ink 前端，双进程 IPC 架构，Python 后端 + Node.js 前端，stdio JSON-RPC 2.0 管道通信，跨平台支持
 - **多模型支持** — DeepSeek / Claude / MiniMax，自动选择 API 后端
 - **Agent 系统** — 5 种内置 Agent（Explore/Plan/Verification/Guide/General），后台执行 + 语义去重 + 批量汇总，支持自定义 Agent，3 层工具过滤、上下文隔离、6 阶段生命周期
 - **MCP 扩展** — 5 种传输类型（stdio/SSE/HTTP/WebSocket/SDK），OAuth 2.0 + PKCE 认证，headersHelper 动态鉴权，自动重连（指数退避），企业策略管控，并发连接调度
@@ -403,7 +403,7 @@ NextCode 支持 [Model Context Protocol](https://modelcontextprotocol.io/)，可
 | **Schema 验证** | Pydantic |
 | **API 客户端** | anthropic SDK / openai SDK |
 | **异步** | asyncio |
-| **IPC** | Unix Domain Socket (JSON-Line) |
+| **IPC** | stdio 管道 (JSON-RPC 2.0) |
 | **配置格式** | JSON |
 
 ## 项目结构
@@ -438,7 +438,7 @@ nextcode/
     ├── permissions/              # 权限管理（8 阶段管线 + 5 种模式）
     ├── prompts/                  # System Prompt 组装（静态/动态分割）
     ├── state/                    # 状态管理（Store + ToolUseContext）
-    ├── ipc/                      # IPC 桥接（Python ↔ Ink）
+    ├── ipc/                      # IPC 桥接（Python ↔ Ink，stdio 管道 + JSON-RPC 2.0）
     ├── context/                  # 系统/用户上下文
     ├── agents/                   # Agent 系统
     │   ├── definition.py         # Agent 定义数据蓝图
@@ -496,9 +496,9 @@ nextcode/
 │  ├── mcp/          MCP 连接管理、工具代理、OAuth 认证        │
 │  ├── memory/       Memory 提取、相关性打分、Dream 整合      │
 │  ├── skills/      Skill 加载、frontmatter、条件激活        │
-│  └── ipc/          Unix Socket IPC 桥接                      │
+│  └── ipc/          stdio 管道 IPC 桥接                        │
 └─────────────────────────────────────────────────────────────┘
-                            │ Unix Socket
+                            │ OS Pipe (fd)
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                      Node.js 前端                            │
