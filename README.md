@@ -1,12 +1,17 @@
 # NextCode
 
-AI Agent代码助手，保留Agent核心架构设计机制，去掉企业级复杂度。支持读取、编辑、创建文件，搜索代码库，运行 Shell 命令，修 Bug、加功能、做代码审查；支持并行派发多个子 Agent 处理独立任务，后台执行长时间构建/测试并自动汇总结果；内置上下文压缩（MICRO/FULL/BLOCKING 三级压缩 + 9 维摘要）和持久化记忆管理（4 种 Memory 类型 + Dream 自动整合），5 种 Agent（Explore/Plan/Verification/Guide/General）覆盖代码探索、架构规划、对抗审查、功能导航和通用任务；通过 MCP 扩展连接外部工具服务器，8 阶段权限管线保障执行安全。
+AI Agent代码助手，保留Agent核心架构设计机制。支持读取、编辑、创建文件，搜索代码库，运行 Shell 命令，修 Bug、加功能、做代码审查；支持并行派发多个子 Agent 处理独立任务，后台执行长时间构建/测试并自动汇总结果；内置上下文压缩（MICRO/FULL/BLOCKING 三级压缩 + 9 维摘要）和持久化记忆管理（4 种 Memory 类型 + Dream 自动整合），5 种 Agent（Explore/Plan/Verification/Guide/General）覆盖代码探索、架构规划、对抗审查、功能导航和通用任务；通过 MCP 扩展连接外部工具服务器，8 阶段权限管线保障执行安全。
 
 
 [![Python 版本](https://img.shields.io/badge/python-3.13%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![代码风格](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
+运行示例：
+
+![img.png](img.png)
+
+![demo.png](demo.png)
 ## 特性
 
 - **Ink 终端 UI** — React + Ink 前端，双进程 IPC 架构，Python 后端 + Node.js 前端，Unix Domain Socket 双向 JSON-Line 通信
