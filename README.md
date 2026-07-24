@@ -12,6 +12,11 @@ AI Agent代码助手，保留Agent核心架构设计机制。支持读取、编�
 ![img.png](img.png)
 
 ![demo.png](demo.png)
+
+上下文压缩：
+
+![img_1.png](img_1.png)
+
 ## 特性
 
 - **Ink 终端 UI** — React + Ink 前端，双进程 IPC 架构，Python 后端 + Node.js 前端，Unix Domain Socket 双向 JSON-Line 通信
