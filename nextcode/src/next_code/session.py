@@ -1,6 +1,6 @@
 """Session persistence — save/load/resume conversation sessions.
 
-Sessions are stored as JSON files in <project_root>/.nextcode/sessions/.
+Sessions are stored as JSON files in ~/.nextcode/sessions/.
 Each session file contains the full message history and metadata.
 
 Session ID format: YYYYMMDD_HHMMSS_XXXXXX (timestamp + 6-char random hex)
@@ -43,12 +43,12 @@ class SessionMeta:
     tool_call_count: int = 0
 
 
-def _sessions_dir(project_root: str) -> Path:
-    return Path(project_root) / ".nextcode" / "sessions"
+def _sessions_dir() -> Path:
+    return Path.home() / ".nextcode" / "sessions"
 
 
-def _ensure_sessions_dir(project_root: str) -> Path:
-    d = _sessions_dir(project_root)
+def _ensure_sessions_dir() -> Path:
+    d = _sessions_dir()
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -56,7 +56,6 @@ def _ensure_sessions_dir(project_root: str) -> Path:
 # ── Save ──────────────────────────────────────────────────────────────────────
 
 def save_session(
-    project_root: str,
     session_id: str,
     messages: list[dict[str, Any]],
     meta: SessionMeta,
@@ -68,7 +67,7 @@ def save_session(
     meta.ended_at = time.time()
 
     try:
-        d = _ensure_sessions_dir(project_root)
+        d = _ensure_sessions_dir()
         path = d / f"{session_id}.json"
         data: dict[str, Any] = {
             "session_id": session_id,
@@ -93,43 +92,28 @@ def save_session(
 # ── Load ──────────────────────────────────────────────────────────────────────
 
 def load_session(session_id: str) -> dict[str, Any] | None:
-    """Load a session by ID. Searches project root's .nextcode/sessions/."""
-    cwd = Path.cwd()
-    for parent in [cwd, *cwd.parents]:
-        candidate = parent / ".nextcode" / "sessions" / f"{session_id}.json"
-        if candidate.exists():
-            try:
-                return json.loads(candidate.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                logger.exception("Failed to load session %s", session_id)
-                return None
-
-    # Also search in project_root from the current setup if available
-    try:
-        from .state.store import Store
-        store = Store()
-        project_root = store.get("project_root", "")
-        if project_root:
-            candidate = Path(str(project_root)) / ".nextcode" / "sessions" / f"{session_id}.json"
-            if candidate.exists():
-                return json.loads(candidate.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-
+    """Load a session by ID from ~/.nextcode/sessions/."""
+    candidate = _sessions_dir() / f"{session_id}.json"
+    if candidate.exists():
+        try:
+            return json.loads(candidate.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            logger.exception("Failed to load session %s", session_id)
+            return None
     return None
 
 
-def find_session(session_id: str, project_root: str) -> Path | None:
+def find_session(session_id: str) -> Path | None:
     """Find a session file by ID. Returns the Path or None."""
-    candidate = _sessions_dir(project_root) / f"{session_id}.json"
+    candidate = _sessions_dir() / f"{session_id}.json"
     return candidate if candidate.exists() else None
 
 
 # ── List ──────────────────────────────────────────────────────────────────────
 
-def list_sessions(project_root: str) -> list[dict[str, Any]]:
+def list_sessions() -> list[dict[str, Any]]:
     """List all saved sessions with metadata (sorted newest first)."""
-    d = _sessions_dir(project_root)
+    d = _sessions_dir()
     if not d.exists():
         return []
 

@@ -68,17 +68,16 @@ def cli(ctx: click.Context, version: bool, print_mode: bool, model: str | None,
 
 def _list_sessions(cwd: str) -> None:
     """Print a list of saved sessions."""
-    from .setup import _find_project_root
-    from .session import list_sessions, _format_duration
+    from .session import list_sessions, _format_duration, _sessions_dir
 
-    project_root = _find_project_root(cwd)
-    sessions = list_sessions(project_root)
+    sessions = list_sessions()
 
     if not sessions:
         click.echo("No saved sessions found.")
         return
 
-    click.echo(f"Sessions in {project_root}/.nextcode/sessions/:\n")
+    sessions_path = _sessions_dir()
+    click.echo(f"Sessions in {sessions_path}/:\n")
     for s in sessions:
         sid = s.get("session_id", "?")
         dur = _format_duration(s.get("ended_at", 0) - s.get("started_at", 0))
@@ -129,9 +128,8 @@ def _save_session_on_exit() -> None:
         if not messages:
             return
         # Skip if already saved by bridge (primary save path)
-        project_root = store.get("project_root", "")
         session_id = store.get("session_id", "")
-        if find_session(session_id, project_root):
+        if find_session(session_id):
             return
         title = store.get("title") or extract_title(messages)
         meta = SessionMeta(
@@ -142,7 +140,6 @@ def _save_session_on_exit() -> None:
             cwd=store.get("cwd", ""),
         )
         saved_path = save_session(
-            store.get("project_root", ""),
             store.get("session_id", ""),
             messages,
             meta,

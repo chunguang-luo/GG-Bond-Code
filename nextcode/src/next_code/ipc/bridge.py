@@ -374,7 +374,6 @@ class IPCBridge:
                 tool_call_count=self._runner.loop_state.tool_call_count,
             )
             save_session(
-                store.get("project_root", ""),
                 store.get("session_id", ""),
                 messages,
                 meta,
