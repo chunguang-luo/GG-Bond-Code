@@ -727,32 +727,9 @@ class IPCBridge:
 
     async def send_resume_info(self) -> None:
         """Send the resumed session's Q&A history to the frontend."""
-        import re
+        from ..session import _strip_context
         store = Store()
         messages = store.get("messages", [])
-
-        # Patterns for raw markdown context sections prepended by
-        # prepend_user_context() in context/user.py. The format is:
-        #   # NEXTCODE Project Memory\n<content>
-        #   # Memory Index\n<content>
-        #   Today's date is YYYY/MM/DD.
-        # Followed by the actual user question.
-        _NEXTCODE_MD_RE = re.compile(
-            r'^# NEXTCODE Project Memory\n.*?\n\n(?=# Memory Index\n|Today\'s date is)',
-            re.DOTALL,
-        )
-        _MEMORY_INDEX_RE = re.compile(
-            r'^# Memory Index\n.*?\n\n(?=Today\'s date is)',
-            re.DOTALL,
-        )
-        _DATE_RE = re.compile(r'^Today\'s date is \d{4}/\d{2}/\d{2}\.\n\n')
-
-        def _strip_system_context(text: str) -> str:
-            """Remove prepended context sections (NEXTCODE.md, Memory Index, date)."""
-            t = _NEXTCODE_MD_RE.sub("", text)
-            t = _MEMORY_INDEX_RE.sub("", t)
-            t = _DATE_RE.sub("", t)
-            return t.strip()
 
         # Extract user→assistant Q&A pairs, skipping tool-only turns
         qa_pairs: list[tuple[str, str]] = []
@@ -782,9 +759,9 @@ class IPCBridge:
                     for b in content
                 ):
                     continue
-                # Strip system-context wrapper (NEXTCODE.md etc.) — only show
-                # the actual user question
-                pending_question = _strip_system_context(text)
+                # Strip prepended context (NEXTCODE.md etc.) — keep only the
+                # actual user question (text after last \n\n)
+                pending_question = _strip_context(text)
             elif role == "assistant" and pending_question:
                 # Truncate long responses
                 summary = text[:100] + ("..." if len(text) > 100 else "")

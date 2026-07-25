@@ -190,6 +190,20 @@ def _format_duration(seconds: float) -> str:
     return f"{days}d {remaining_h}h {remaining_min}m"
 
 
+def _strip_context(text: str) -> str:
+    """Strip prepended context (NEXTCODE.md, Memory Index, date) from a user message.
+
+    prepend_user_context() in context/user.py constructs:
+        context_block + "\\n\\n" + original_content
+
+    We take everything after the last double-newline, which is the actual
+    user question.
+    """
+    if "\n\n" in text:
+        return text.rsplit("\n\n", 1)[-1].strip()
+    return text.strip()
+
+
 def extract_title(messages: list[dict[str, Any]]) -> str:
     """Extract a session title from the first user message."""
     for msg in messages:
@@ -205,7 +219,9 @@ def extract_title(messages: list[dict[str, Any]]) -> str:
                 continue
 
             if text:
-                # Truncate to ~50 chars, break at word boundary
+                # Strip prepended context (NEXTCODE.md etc.) — keep only the
+                # actual user question
+                text = _strip_context(text)
                 if len(text) > 50:
                     text = text[:47].rsplit(" ", 1)[0] + "..."
                 return text
