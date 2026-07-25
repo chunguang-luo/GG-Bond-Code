@@ -63,6 +63,8 @@ class LoopState:
     transition: TransitionReason | None = None
     transition_count: int = 0
     turn_count: int = 0
+    user_message_count: int = 0
+    tool_call_count: int = 0
     _log: list[TransitionRecord] = field(default_factory=list)
 
     def set_transition(self, reason: TransitionReason, detail: str = "") -> None:
@@ -96,4 +98,6 @@ class LoopState:
         self.transition = None
         self.transition_count = 0
         self.turn_count = 0
+        self.user_message_count = 0
+        self.tool_call_count = 0
         self._log.clear()

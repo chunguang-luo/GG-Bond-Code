@@ -233,8 +233,12 @@ export function App({ transport }: AppProps) {
     transport.onMessage((msg: Message) => {
       switch (msg.type) {
         case CoreToInk.SESSION_READY: {
-          setModel((msg.payload as { model?: string }).model || "unknown");
-          setCwd((msg.payload as { cwd?: string }).cwd || "unknown");
+          const readyPayload = msg.payload as { model?: string; cwd?: string; resumed?: boolean };
+          setModel(readyPayload.model || "unknown");
+          setCwd(readyPayload.cwd || "unknown");
+          if (readyPayload.resumed) {
+            setShowWelcome(false);
+          }
           break;
         }
 
@@ -720,8 +724,17 @@ export function App({ transport }: AppProps) {
         }
 
         case CoreToInk.SESSION_SHUTDOWN: {
+          const shutdownPayload = msg.payload as { summary?: string };
+          if (shutdownPayload.summary) {
+            // Add summary as a final message so it renders in the Ink UI
+            setMessages((prev) => [
+              ...prev,
+              { id: nextId(), type: "info", content: shutdownPayload.summary! },
+            ]);
+          }
           transport.close();
-          exit();
+          // Brief delay so Ink renders the summary before exit
+          setTimeout(() => exit(), 300);
           break;
         }
 
@@ -915,9 +928,6 @@ export function App({ transport }: AppProps) {
           { id: nextId(), type: "command", content: text },
         ]);
         transport.sendEvent(InkToCore.USER_COMMAND, { command: text });
-        if (text.toLowerCase() === "/exit" || text.toLowerCase() === "/quit") {
-          exit();
-        }
       } else if (text.trim()) {
         setShowWelcome(false);
         // Show user's question in message list
@@ -936,7 +946,7 @@ export function App({ transport }: AppProps) {
         }
       }
     },
-    [transport, exit, isQueryRunning]
+    [transport, isQueryRunning]
   );
 
   const handlePermissionResponse = useCallback(

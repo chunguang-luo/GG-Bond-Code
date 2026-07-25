@@ -15,6 +15,9 @@ from .init import init
 @click.option("--print", "print_mode", is_flag=True, help="Non-interactive mode (read from stdin).")
 @click.option("--model", default=None, help="Model to use.")
 @click.option("--cwd", default=None, help="Working directory.")
+@click.option("--resume", "resume_from", default=None, help="Resume a previous session by ID.")
+@click.option("--title", "-t", default=None, help="Custom title for this session.")
+@click.option("--sessions", "list_sessions_flag", is_flag=True, help="List saved sessions.")
 @click.option("--allowed-tools", "allowed_tools", default=None, help="Comma-separated list of allowed tools.")
 @click.option("--disallowed-tools", "disallowed_tools", default=None, help="Comma-separated list of disallowed tools.")
 @click.option("--mcp-config", "mcp_config", default=None,
@@ -24,7 +27,9 @@ from .init import init
               help="Permission mode for this session.")
 @click.pass_context
 def cli(ctx: click.Context, version: bool, print_mode: bool, model: str | None,
-        cwd: str | None, allowed_tools: str | None, disallowed_tools: str | None,
+        cwd: str | None, resume_from: str | None, title: str | None,
+        list_sessions_flag: bool,
+        allowed_tools: str | None, disallowed_tools: str | None,
         mcp_config: str | None, permission_mode: str | None) -> None:
     """NextCode — AI-powered CLI assistant."""
     ctx.ensure_object(dict)
@@ -37,10 +42,17 @@ def cli(ctx: click.Context, version: bool, print_mode: bool, model: str | None,
     # Run init (memoized — only executes once)
     init()
 
+    # Handle --sessions: list saved sessions and exit
+    if list_sessions_flag:
+        _list_sessions(cwd or str(Path.cwd()))
+        return
+
     # Store options in context
     ctx.obj["model"] = model
     ctx.obj["cwd"] = cwd or str(Path.cwd())
     ctx.obj["print_mode"] = print_mode
+    ctx.obj["resume_from"] = resume_from
+    ctx.obj["title"] = title
     ctx.obj["allowed_tools"] = allowed_tools
     ctx.obj["disallowed_tools"] = disallowed_tools
     ctx.obj["mcp_config"] = mcp_config
@@ -52,6 +64,28 @@ def cli(ctx: click.Context, version: bool, print_mode: bool, model: str | None,
             asyncio.run(_run_print_mode(ctx))
         else:
             asyncio.run(_run_interactive(ctx))
+
+
+def _list_sessions(cwd: str) -> None:
+    """Print a list of saved sessions."""
+    from .setup import _find_project_root
+    from .session import list_sessions, _format_duration
+
+    project_root = _find_project_root(cwd)
+    sessions = list_sessions(project_root)
+
+    if not sessions:
+        click.echo("No saved sessions found.")
+        return
+
+    click.echo(f"Sessions in {project_root}/.nextcode/sessions/:\n")
+    for s in sessions:
+        sid = s.get("session_id", "?")
+        dur = _format_duration(s.get("ended_at", 0) - s.get("started_at", 0))
+        title = s.get("title", "(no messages)")
+        if len(title) > 50:
+            title = title[:47] + "..."
+        click.echo(f"  {sid}  {dur:>12s}  {title}")
 
 
 def _parse_mcp_config(mcp_config: str | None) -> dict | None:
@@ -79,6 +113,57 @@ def _parse_mcp_config(mcp_config: str | None) -> dict | None:
         return None
 
 
+def _save_session_on_exit() -> None:
+    """Best-effort session save after Ink process exits.
+
+    The primary save path is in IPCBridge when handling /exit (SHUTDOWN).
+    This is a safety net for other exit cases (Ink crash, SIGTERM, etc.).
+    """
+    import time as _time
+    from .state.store import Store
+    from .session import save_session, find_session, extract_title, SessionMeta
+
+    try:
+        store = Store()
+        messages = store.get("messages", [])
+        if not messages:
+            return
+        # Skip if already saved by bridge (primary save path)
+        project_root = store.get("project_root", "")
+        session_id = store.get("session_id", "")
+        if find_session(session_id, project_root):
+            return
+        title = store.get("title") or extract_title(messages)
+        meta = SessionMeta(
+            session_id=store.get("session_id", ""),
+            title=title,
+            started_at=store.get("session_start", _time.time()),
+            model=store.get("model", ""),
+            cwd=store.get("cwd", ""),
+        )
+        saved_path = save_session(
+            store.get("project_root", ""),
+            store.get("session_id", ""),
+            messages,
+            meta,
+        )
+        if saved_path:
+            # Print exit summary to stderr (stdout may be in raw mode after Ink)
+            import sys
+            from .session import format_exit_summary
+            summary = format_exit_summary(
+                session_id=store.get("session_id", ""),
+                title=title,
+                started_at=store.get("session_start", _time.time()),
+                user_message_count=0,
+                tool_call_count=0,
+                total_messages=len(messages),
+            )
+            sys.stderr.write(summary + "\n")
+    except Exception:
+        pass  # Never let session save crash the shutdown path
+
+
 async def _run_interactive(ctx: click.Context) -> None:
     """Launch interactive REPL session with Ink frontend."""
     import logging
@@ -93,7 +178,8 @@ async def _run_interactive(ctx: click.Context) -> None:
 
     logger = logging.getLogger(__name__)
 
-    setup(cwd=ctx.obj["cwd"], model=ctx.obj["model"])
+    setup(cwd=ctx.obj["cwd"], model=ctx.obj["model"],
+          resume_from=ctx.obj.get("resume_from"), title=ctx.obj.get("title"))
 
     # Create shared tool registry (used by both MCP and QueryRunner)
     registry = create_default_registry()
@@ -147,7 +233,13 @@ async def _run_interactive(ctx: click.Context) -> None:
         # 3. Wait briefly for Node.js to start up, then send session ready
         await asyncio.sleep(0.2)
         await bridge.send_session_ready()
-        await bridge.send_welcome()
+        # Skip welcome screen when resuming a previous session;
+        # show a summary of the previous conversation instead
+        from .state.store import Store
+        if Store().get("resumed", False):
+            await bridge.send_resume_info()
+        else:
+            await bridge.send_welcome()
 
         # 5. Wait for Ink process to exit
         # Ink owns the terminal, user interacts directly with it.
@@ -163,6 +255,8 @@ async def _run_interactive(ctx: click.Context) -> None:
         logger.exception("Ink: unexpected error")
         raise SystemExit(1)
     finally:
+        # Save session on all exit paths (normal, Ctrl+C, crash)
+        _save_session_on_exit()
         await launcher.shutdown()
         await transport.close()
         await mcp_manager.shutdown()

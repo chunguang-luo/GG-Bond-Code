@@ -166,6 +166,33 @@ class QueryRunner:
                 labels.append(name)
         return ", ".join(labels)
 
+    def _append_redirect(self, messages: list[dict[str, Any]], redirect_text: str) -> None:
+        """Append redirect text to the last tool_result, preserving role alternation.
+
+        Mirrors conversation_loop.py:1123 — drains mid-turn user text into the
+        most recent tool result so the model sees it as additional context on
+        that tool's output, not as a new user message.  This avoids breaking
+        the strict user/assistant/tool alternation and keeps the prompt cache warm.
+        """
+        redirect = f"\n\n[user redirect] {redirect_text}"
+        if self.family == "anthropic":
+            # Last message is {"role": "user", "content": [..., {"type": "tool_result", ...}]}
+            for i in range(len(messages) - 1, -1, -1):
+                msg = messages[i]
+                if msg.get("role") == "user" and isinstance(msg.get("content"), list):
+                    # Find the last tool_result block
+                    for block in reversed(msg["content"]):
+                        if isinstance(block, dict) and block.get("type") == "tool_result":
+                            block["content"] = (block.get("content", "") + redirect)
+                            return
+        else:
+            # OpenAI family: {"role": "tool", "tool_call_id": "...", "content": "..."}
+            for i in range(len(messages) - 1, -1, -1):
+                msg = messages[i]
+                if msg.get("role") == "tool":
+                    msg["content"] = (msg.get("content", "") + redirect)
+                    return
+
     async def run(self, user_message: str) -> AsyncIterator[QueryEvent]:
         """Run a single user message through the conversation loop."""
         logger.info(f"Query started with model={self.model}, max_turns={self.max_turns}")
@@ -212,6 +239,7 @@ class QueryRunner:
             })
             messages.append({"role": "assistant", "content": "Understood."})
         messages.append({"role": "user", "content": user_message})
+        self._loop_state.user_message_count += 1
         # Inject user context — omit NEXTCODE.md for agents that don't need it
         omit_nextcode_md = ctx.get_state("omit_nextcode_md") or False
         if omit_nextcode_md:
@@ -419,11 +447,15 @@ class QueryRunner:
                         ]
                     messages.append(msg)
 
-                # Check for injected user messages (new questions submitted while running)
+                # Check for injected user messages (mid-conversation redirects).
+                # Instead of inserting a new user message (which breaks role
+                # alternation and invalidates the prompt cache), append the
+                # redirect text to the last tool_result — mirroring
+                # conversation_loop.py:1123's drain behaviour.
                 if self._injected_messages:
                     injected = self._injected_messages.pop(0)
-                    messages.append({"role": "user", "content": injected})
-                    yield QueryEvent(type="system", content=f"[用户追问: {injected[:50]}]")
+                    self._append_redirect(messages, injected)
+                    yield QueryEvent(type="system", content=f"[redirect: {injected[:50]}]")
                     continue
 
                 if not has_tool_use:
@@ -552,6 +584,7 @@ class QueryRunner:
         messages: list[dict[str, Any]],
     ) -> None:
         """Yield a tool_result event and append the formatted message to history."""
+        self._loop_state.tool_call_count += 1
         yield QueryEvent(
             type="tool_result",
             tool_name=result["name"],

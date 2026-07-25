@@ -30,6 +30,7 @@ AI Agent代码助手，保留Agent核心架构设计机制。支持读取、编�
 - **Memory 系统** — 4 种类型（user/feedback/project/reference），相关性打分，老化淘汰，Dream 自动整合，Agent Memory 3 范围（user/project/local）
 - **任务系统** — 后台 Bash/Agent 任务，磁盘输出（5GB 上限），看门狗交互检测，60s 自动驱逐，僵尸进程防护
 - **命令系统** — `/help`、`/clear`、`/compact`、`/context`、`/thinking`、`/model`、`/log`、`/memory`、`/summary`、`/dangerous-bg-no-ask`、`/exit`，支持 Tab 补全和相似命令提示
+- **会话管理** — 退出自动保存，`--resume` 恢复，`--sessions` 列表，`-t` 自定义标题，退出摘要展示
 - **权限系统** — 8 阶段决策管线，5 种模式循环，Shell 规则匹配（精确/前缀/通配符），路径安全校验，断路器防护
 - **Prompt Cache** — 静态/动态 System Prompt 分割 + 工具 Schema 字节一致性缓存，最大化 Anthropic KV Cache 命中
 - **API 韧性** — 指数退避重试 + 错误恢复策略（MaxOutputTokens 自动降级）+ 超时保护
@@ -81,6 +82,15 @@ nextcode --model claude-sonnet-4-20250514
 # 指定工作目录
 nextcode --cwd /path/to/project
 
+# 恢复之前的会话
+nextcode --resume 20260725_161652_81b9ad
+
+# 为会话设置标题
+nextcode -t "修复登录 Bug"
+
+# 列出所有已保存的会话
+nextcode --sessions
+
 # 查看配置
 nextcode config
 ```
@@ -98,7 +108,7 @@ nextcode config
 | `/log` | 显示对话循环状态日志 |
 | `/memory` | 查看/列出/查询 Agent Memory |
 | `/summary` | 显示会话摘要 |
-| `/exit` `/quit` | 退出 REPL |
+| `/exit` `/quit` | 退出 REPL（自动保存会话） |
 
 > 输入 `/` 后按 Tab 键可补全命令。输入错误命令时会提示相似命令。
 
@@ -677,6 +687,7 @@ Context window full. Use /compact to manually compress the conversation.
 | MCP 扩展（5 种传输 + OAuth + 重连 + 企业策略） | ✅ |
 | MCP 工具代理（自动注册到 ToolRegistry） | ✅ |
 | Memory 系统（4 类型 + 提取 + Dream + Agent Memory） | ✅ |
+| 会话管理（自动保存/恢复/列表/标题/摘要） | ✅ |
 | 单元测试 | ✅ |
 
 ## 贡献

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 from .state.store import Store, reset_store
@@ -19,7 +20,7 @@ def _on_store_change(key: str, new_value: object, old_value: object) -> None:
         update_setting(key, new_value)
 
 
-def setup(cwd: str, model: str | None = None) -> None:
+def setup(cwd: str, model: str | None = None, *, resume_from: str | None = None, title: str | None = None) -> None:
     """Initialize session state. Only called for interactive/print sessions."""
     # 1. Set working directory
     os.chdir(cwd)
@@ -41,14 +42,36 @@ def setup(cwd: str, model: str | None = None) -> None:
     # 4. Reload settings now that project_root is set (ensures project config is loaded)
     load_settings()
 
-    # 5. Initialize conversation history
-    store.set("messages", [])
+    # 5. Generate session ID
+    from .session import generate_session_id
+    session_id = generate_session_id()
+    store.set("session_id", session_id)
+    store.set("title", title or "")
+    store.set("resumed", False)
 
-    # 6. Record session start time
-    import time
-    store.set("session_start", time.time())
+    # 6. Load session if resuming
+    if resume_from:
+        from .session import load_session
+        data = load_session(resume_from)
+        if data:
+            store.set("messages", data.get("messages", []))
+            store.set("session_id", data.get("session_id", resume_from))
+            store.set("title", data.get("title", ""))
+            if data.get("model"):
+                store.set("model", data["model"])
+            store.set("resumed", True)
+            store.set("session_start", data.get("started_at", time.time()))
+        else:
+            import sys
+            print(f"Warning: session '{resume_from}' not found. Starting a new session.\n"
+                  f"Use `nextcode --sessions` to list saved sessions.", file=sys.stderr)
+            store.set("messages", [])
+            store.set("session_start", time.time())
+    else:
+        store.set("messages", [])
+        store.set("session_start", time.time())
 
-    # 6. Initialize UI preferences in Store (optimization 3)
+    # 7. Initialize UI preferences in Store
     store.set("ui.show_thinking", False)
     store.set("ui.show_tool_details", False)
 

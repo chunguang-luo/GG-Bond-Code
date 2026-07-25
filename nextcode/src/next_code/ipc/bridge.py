@@ -272,7 +272,12 @@ class IPCBridge:
             get_task_registry().clear()
             await self.transport.send_event("query.cleared", {})
         elif result.type == ResultType.SHUTDOWN:
-            await self.transport.send_event(CoreToInk.SESSION_SHUTDOWN, result.content)
+            # Save session and build exit summary before shutting down
+            summary = await self._save_and_summarize_session()
+            await self.transport.send_event(CoreToInk.SESSION_SHUTDOWN, {
+                "reason": result.content.get("reason", "user exit"),
+                "summary": summary,
+            })
         elif result.type == ResultType.CONTEXT_INFO:
             await self.transport.send_event(CoreToInk.CONTEXT_INFO, result.content)
         elif result.type == ResultType.COMPACT_COMPLETE:
@@ -337,6 +342,56 @@ class IPCBridge:
         if self._runner._injected_messages:
             next_message = self._runner._injected_messages.pop(0)
             self._query_task = asyncio.create_task(self._run_query(next_message))
+
+    async def _save_and_summarize_session(self) -> str:
+        """Save current session to disk and return a formatted exit summary.
+
+        Called when the user issues /exit or /quit. Reads messages and
+        metadata from Store, writes the session file, and returns an
+        ANSI-colored summary string for display in the terminal.
+        """
+        import time as _time
+        from ..session import (
+            save_session, format_exit_summary, extract_title, SessionMeta,
+        )
+
+        try:
+            store = Store()
+            messages = store.get("messages", [])
+            logger.info("Session save: %d messages in store", len(messages) if messages else 0)
+            if not messages:
+                return ""
+
+            title = store.get("title") or extract_title(messages)
+            meta = SessionMeta(
+                session_id=store.get("session_id", ""),
+                title=title,
+                started_at=store.get("session_start", _time.time()),
+                model=store.get("model", ""),
+                cwd=store.get("cwd", ""),
+                turn_count=self._runner.loop_state.turn_count,
+                user_message_count=self._runner.loop_state.user_message_count,
+                tool_call_count=self._runner.loop_state.tool_call_count,
+            )
+            save_session(
+                store.get("project_root", ""),
+                store.get("session_id", ""),
+                messages,
+                meta,
+            )
+            summary = format_exit_summary(
+                session_id=store.get("session_id", ""),
+                title=title,
+                started_at=store.get("session_start", _time.time()),
+                user_message_count=self._runner.loop_state.user_message_count,
+                tool_call_count=self._runner.loop_state.tool_call_count,
+                total_messages=len(messages),
+            )
+            logger.info("Session saved: %s (%d messages)", store.get("session_id", ""), len(messages))
+            return summary
+        except Exception:
+            logger.exception("Failed to save session on exit")
+            return ""
 
     async def _send_auto_context_info(self) -> None:
         """Send context info automatically for status bar updates.
@@ -652,11 +707,13 @@ class IPCBridge:
         store = Store()
         model = self.model or store.get("model", "unknown")
         cwd = store.get("cwd", "unknown")
+        resumed = store.get("resumed", False)
 
         await self.transport.send_event(CoreToInk.SESSION_READY.value, {
             "model": model,
             "cwd": cwd,
             "projectRoot": cwd,
+            "resumed": resumed,
         })
 
         # Send initial command list (builtins only at this point)
@@ -667,6 +724,86 @@ class IPCBridge:
             self._skills_loaded = True
             project_root = store.get("project_root")
             asyncio.create_task(self._load_skills(cwd, project_root))
+
+    async def send_resume_info(self) -> None:
+        """Send the resumed session's Q&A history to the frontend."""
+        import re
+        store = Store()
+        messages = store.get("messages", [])
+
+        # Patterns for raw markdown context sections prepended by
+        # prepend_user_context() in context/user.py. The format is:
+        #   # NEXTCODE Project Memory\n<content>
+        #   # Memory Index\n<content>
+        #   Today's date is YYYY/MM/DD.
+        # Followed by the actual user question.
+        _NEXTCODE_MD_RE = re.compile(
+            r'^# NEXTCODE Project Memory\n.*?\n\n(?=# Memory Index\n|Today\'s date is)',
+            re.DOTALL,
+        )
+        _MEMORY_INDEX_RE = re.compile(
+            r'^# Memory Index\n.*?\n\n(?=Today\'s date is)',
+            re.DOTALL,
+        )
+        _DATE_RE = re.compile(r'^Today\'s date is \d{4}/\d{2}/\d{2}\.\n\n')
+
+        def _strip_system_context(text: str) -> str:
+            """Remove prepended context sections (NEXTCODE.md, Memory Index, date)."""
+            t = _NEXTCODE_MD_RE.sub("", text)
+            t = _MEMORY_INDEX_RE.sub("", t)
+            t = _DATE_RE.sub("", t)
+            return t.strip()
+
+        # Extract user→assistant Q&A pairs, skipping tool-only turns
+        qa_pairs: list[tuple[str, str]] = []
+        pending_question: str | None = None
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            # Extract text from either string or content-block format
+            if isinstance(content, list):
+                text = " ".join(
+                    b.get("text", "")
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ).strip()
+            elif isinstance(content, str):
+                text = content.strip()
+            else:
+                continue
+
+            if not text:
+                continue
+
+            if role == "user" and not text.startswith("[user redirect]"):
+                # Skip tool_result user messages (they only carry tool output)
+                if isinstance(content, list) and any(
+                    isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in content
+                ):
+                    continue
+                # Strip system-context wrapper (NEXTCODE.md etc.) — only show
+                # the actual user question
+                pending_question = _strip_system_context(text)
+            elif role == "assistant" and pending_question:
+                # Truncate long responses
+                summary = text[:100] + ("..." if len(text) > 100 else "")
+                qa_pairs.append((pending_question, summary))
+                pending_question = None
+
+        if not qa_pairs:
+            return
+
+        lines = ["Resumed session:"]
+        for i, (q, a) in enumerate(qa_pairs, 1):
+            q_display = q[:80] + ("..." if len(q) > 80 else "")
+            a_display = a[:100] + ("..." if len(a) > 100 else "")
+            lines.append(f"  {i}. Q: {q_display}")
+            lines.append(f"     A: {a_display}")
+
+        await self.transport.send_event(CoreToInk.QUERY_INFO.value, {
+            "message": "\n".join(lines),
+        })
 
     async def _load_skills(self, cwd: str, project_root: str | None = None) -> None:
         """Load skills from user and project directories."""

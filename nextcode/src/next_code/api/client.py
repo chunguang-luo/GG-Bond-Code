@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Model family detection ──────────────────────────────────────────
 
-_ANTHROPIC_PREFIXES = ("claude-", "minimax-")
+_ANTHROPIC_PREFIXES = ("claude-", "minimax-", "k3")
 _OPENAI_PREFIXES = (
     "deepseek-", "glm-", "gpt-", "o1-", "o3-", "o4-",
     "qwen-", "llama-", "gemini-", "mistral-", "yi-",

@@ -159,6 +159,7 @@ class InkLauncher:
                 stderr=subprocess.PIPE,  # Capture stderr for drain+logging
                 pass_fds=(py_to_node_r, node_to_py_w),
                 env=env,
+                start_new_session=True,  # isolate from Ctrl+C: SIGINT → Ink only, Python cleans up gracefully
             )
 
             # Close slave fd in parent

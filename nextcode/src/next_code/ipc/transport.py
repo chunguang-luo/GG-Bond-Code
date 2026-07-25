@@ -123,9 +123,7 @@ class IPCTransport:
             try:
                 self._tx_writer.close()
                 await self._tx_writer.wait_closed()
-            except OSError:
-                pass
-            except AttributeError:
+            except (OSError, AttributeError, NotImplementedError):
                 pass
             self._tx_writer = None
             self._rx_reader = None
