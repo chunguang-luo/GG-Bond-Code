@@ -775,7 +775,7 @@ class IPCBridge:
         for i, (q, a) in enumerate(qa_pairs, 1):
             q_display = q[:80] + ("..." if len(q) > 80 else "")
             a_display = a[:100] + ("..." if len(a) > 100 else "")
-            lines.append(f"  {i}. Q: {q_display}")
+            lines.append(f"  {i}. \033[32mQ: {q_display}\033[0m")
             lines.append(f"     A: {a_display}")
 
         await self.transport.send_event(CoreToInk.QUERY_INFO.value, {
