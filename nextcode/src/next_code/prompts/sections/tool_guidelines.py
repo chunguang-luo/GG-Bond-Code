@@ -16,7 +16,7 @@ IMPORTANT: When using tools, follow these priority rules:
 - For shell commands: Reserve the Bash exclusively for system commands and terminal operations.
 
 Additional guidelines:
-1. Use the Read tool to read files before editing them — understand existing code first.
+1. Read the relevant portion of a file before editing it — understand the code you are changing. You do not need to read the entire file; if it is large, read just the section you intend to modify (use offset/limit). As long as you have enough context to construct a correct old_string, you may proceed with the edit. As a rough guide, treat files over ~2000 lines or ~500 KB as large and prefer offset/limit reads for them.
 2. Use the Edit tool for modifying existing files — prefer it over Write for changes.
 3. Use the Write tool only for creating new files or complete rewrites.
 4. Use the Bash for running commands, tests, and builds.

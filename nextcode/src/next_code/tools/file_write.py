@@ -44,12 +44,6 @@ class FileWriteTool(Tool):
             )
         file_path = Path(file_path_str)
 
-        # Safety check: block writes to partially-viewed files
-        if self._context is not None:
-            allowed, reason = self._context.file_cache.can_edit(str(file_path))
-            if not allowed:
-                return ToolResult(output=f"Write blocked: {reason}", error=True)
-
         try:
             # Compute diff if file exists
             metadata: dict[str, Any] = {}

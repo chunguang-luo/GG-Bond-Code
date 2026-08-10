@@ -92,12 +92,10 @@ class FileEditTool(Tool):
         if not file_path.exists():
             return ToolResult(output=f"File not found: {file_path}", error=True)
 
-        # Safety check: block edits to partially-viewed files
-        if self._context is not None:
-            allowed, reason = self._context.file_cache.can_edit(str(file_path))
-            if not allowed:
-                return ToolResult(output=f"Edit blocked: {reason}", error=True)
-
+        # Read full content to perform the exact-match replacement. We do NOT
+        # require the file to have been fully read beforehand — having enough
+        # context to construct a correct old_string is sufficient (some files
+        # are too large to read in full just to make a small edit).
         content = file_path.read_text()
 
         if old_string not in content:
